@@ -28,3 +28,9 @@ walkdir = "2"
 
 # Path handling
 pathdiff = "0.2"
+
+# HTTP server for serve command
+tiny_http = "0.12"
+
+# File watching for hot reload
+notify = "6"

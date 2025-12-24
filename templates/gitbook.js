@@ -124,6 +124,9 @@
         return window.location.href.replace(/[^/]*$/, '');
     })();
 
+    // Prevent rapid navigation
+    var isNavigating = false;
+
     function setupSpaNavigation() {
         var sidebar = document.querySelector('.book-summary');
         if (!sidebar) return;
@@ -136,11 +139,33 @@
             if (!href || href.startsWith('#') || href.startsWith('http')) return;
 
             e.preventDefault();
+            if (isNavigating) return;
             loadPage(href, link);
         });
     }
 
+    // Setup page navigation (prev/next buttons)
+    function setupPageNavigation() {
+        document.querySelectorAll('.page-nav').forEach(function(nav) {
+            nav.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (isNavigating) return;
+
+                var href = this.getAttribute('href');
+                if (!href) return;
+
+                loadPage(href, null);
+            });
+        });
+    }
+
     function loadPage(url, clickedLink) {
+        if (isNavigating) return;
+        isNavigating = true;
+
+        // Add loading state
+        document.body.classList.add('loading');
+
         // Always resolve relative to the fixed base URL
         var absoluteUrl = new URL(url, baseUrl).href;
 
@@ -205,9 +230,38 @@
                 if (typeof mermaid !== 'undefined') {
                     mermaid.init(undefined, '.markdown-section .mermaid');
                 }
+
+                // Update prev/next navigation buttons
+                var newPrev = doc.querySelector('.page-nav.prev');
+                var newNext = doc.querySelector('.page-nav.next');
+                var currentPrev = document.querySelector('.page-nav.prev');
+                var currentNext = document.querySelector('.page-nav.next');
+
+                if (currentPrev) currentPrev.remove();
+                if (currentNext) currentNext.remove();
+
+                var bodyInner = document.querySelector('.body-inner');
+                if (bodyInner) {
+                    if (newPrev) {
+                        var prevClone = newPrev.cloneNode(true);
+                        bodyInner.insertBefore(prevClone, bodyInner.firstChild);
+                    }
+                    if (newNext) {
+                        var nextClone = newNext.cloneNode(true);
+                        bodyInner.insertBefore(nextClone, bodyInner.querySelector('.page-wrapper'));
+                    }
+                    // Re-setup page navigation for new buttons
+                    setupPageNavigation();
+                }
+
+                // Reset navigation state
+                isNavigating = false;
+                document.body.classList.remove('loading');
             })
             .catch(function(err) {
                 console.error('Navigation error:', err);
+                isNavigating = false;
+                document.body.classList.remove('loading');
                 window.location.href = url;
             });
     }
@@ -218,6 +272,7 @@
     });
 
     setupSpaNavigation();
+    setupPageNavigation();
 
     // Handle initial page load with hash anchor
     function scrollToHashOnLoad() {

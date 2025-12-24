@@ -36,6 +36,13 @@ impl Templates {
         let sidebar = generate_sidebar(&summary.items, current_path, "");
         context.insert("sidebar", &sidebar);
 
+        // Generate prev/next navigation
+        let (prev_page, next_page) = get_prev_next_pages(&summary.items, current_path);
+        context.insert("prev_url", &prev_page.as_ref().map(|(url, _)| url.clone()));
+        context.insert("prev_title", &prev_page.map(|(_, title)| title));
+        context.insert("next_url", &next_page.as_ref().map(|(url, _)| url.clone()));
+        context.insert("next_title", &next_page.map(|(_, title)| title));
+
         // Check plugin features
         context.insert("back_to_top", &config.is_plugin_enabled("back-to-top-button"));
         context.insert("collapsible", &config.is_plugin_enabled("collapsible-chapters"));
@@ -50,10 +57,52 @@ impl Templates {
     }
 }
 
+/// Get the previous and next pages based on the summary order
+fn get_prev_next_pages(
+    items: &[SummaryItem],
+    current_path: Option<&str>,
+) -> (Option<(String, String)>, Option<(String, String)>) {
+    // Flatten all pages into a list
+    let pages = flatten_pages(items);
+
+    if let Some(current) = current_path {
+        // Find current page index
+        let current_idx = pages.iter().position(|(path, _)| path == current);
+
+        if let Some(idx) = current_idx {
+            let prev = if idx > 0 {
+                pages.get(idx - 1).cloned()
+            } else {
+                None
+            };
+            let next = pages.get(idx + 1).cloned();
+            return (prev, next);
+        }
+    }
+
+    (None, None)
+}
+
+/// Flatten summary items into a list of (html_path, title)
+fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
+    let mut pages = Vec::new();
+
+    for item in items {
+        if let SummaryItem::Link { title, path, children } = item {
+            if let Some(md_path) = path {
+                let html_path = md_path.replace(".md", ".html");
+                pages.push((html_path, title.clone()));
+            }
+            // Recursively add children
+            pages.extend(flatten_pages(children));
+        }
+    }
+
+    pages
+}
+
 fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str) -> String {
     let mut html = String::new();
-
-    eprintln!("DEBUG generate_sidebar: processing {} items", items.len());
 
     for item in items {
         match item {
@@ -64,7 +113,6 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
                 }).unwrap_or(false);
 
                 let has_children = !children.is_empty();
-                eprintln!("DEBUG: {} has_children={} (len={})", title, has_children, children.len());
                 let active_class = if is_active { " active" } else { "" };
                 let expandable_class = if has_children { " expandable" } else { "" };
 
@@ -149,6 +197,20 @@ const PAGE_TEMPLATE: &str = r##"<!DOCTYPE html>
             </svg>
         </div>
         <div class="body-inner">
+            {% if prev_url %}
+            <a class="page-nav prev" href="{{ prev_url | safe }}" title="{{ prev_title }}">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+            </a>
+            {% endif %}
+            {% if next_url %}
+            <a class="page-nav next" href="{{ next_url | safe }}" title="{{ next_title }}">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+            </a>
+            {% endif %}
             <div class="page-wrapper">
                 <div class="page-inner">
                     <section class="markdown-section">

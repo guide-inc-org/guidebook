@@ -45,20 +45,6 @@ pub fn build(source: &Path, output: &Path) -> Result<()> {
 
 fn build_single_book(source: &Path, output: &Path, config: &BookConfig) -> Result<()> {
     let summary = Summary::parse(source)?;
-
-    // Debug: print summary structure
-    eprintln!("DEBUG: Summary has {} items", summary.items.len());
-    for (i, item) in summary.items.iter().enumerate() {
-        if let crate::parser::SummaryItem::Link { title, children, .. } = item {
-            eprintln!("  DEBUG: Item {}: {} has {} children", i, title, children.len());
-            for (j, child) in children.iter().enumerate() {
-                if let crate::parser::SummaryItem::Link { title: ctitle, children: cchildren, .. } = child {
-                    eprintln!("    DEBUG: Child {}: {} has {} grandchildren", j, ctitle, cchildren.len());
-                }
-            }
-        }
-    }
-
     let templates = Templates::new(config)?;
 
     // Create output directory

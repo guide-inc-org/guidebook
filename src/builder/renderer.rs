@@ -115,6 +115,9 @@ fn render_markdown_internal(content: &str) -> String {
     // Auto-link URLs that are not already linked
     html_output = autolink_urls(&html_output);
 
+    // Convert any remaining markdown images inside HTML blocks to <img> tags
+    html_output = convert_remaining_markdown_images(&html_output);
+
     html_output
 }
 
@@ -284,23 +287,41 @@ fn fix_relative_links(html: &str) -> String {
     result
 }
 
-/// Auto-link URLs that are not already inside anchor tags
+/// Auto-link URLs that are not already inside anchor tags or code blocks
 /// Converts bare URLs like https://example.com to <a href="..." target="_blank">...</a>
 fn autolink_urls(html: &str) -> String {
     let mut result = String::new();
     let mut chars = html.char_indices().peekable();
+    let mut in_code = false;  // Track if we're inside <code> or <pre>
 
     while let Some((i, c)) = chars.next() {
         // Check if we're inside an HTML tag
         if c == '<' {
             result.push(c);
-            // Copy until we find '>'
+
+            // Collect the tag
+            let mut tag_content = String::new();
             while let Some((_, ch)) = chars.next() {
                 result.push(ch);
                 if ch == '>' {
                     break;
                 }
+                tag_content.push(ch);
             }
+
+            // Check for code/pre tags
+            let tag_lower = tag_content.to_lowercase();
+            if tag_lower.starts_with("code") || tag_lower.starts_with("pre") {
+                in_code = true;
+            } else if tag_lower.starts_with("/code") || tag_lower.starts_with("/pre") {
+                in_code = false;
+            }
+            continue;
+        }
+
+        // Skip auto-linking if inside code block
+        if in_code {
+            result.push(c);
             continue;
         }
 
@@ -346,6 +367,73 @@ fn autolink_urls(html: &str) -> String {
             let trimmed_len = url_end - url_start - url.len();
             if trimmed_len > 0 {
                 result.push_str(&html[url_start + url.len()..url_end]);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+/// Convert remaining markdown image syntax ![alt](url) to <img> tags
+/// This handles images inside raw HTML blocks that pulldown-cmark doesn't parse
+fn convert_remaining_markdown_images(html: &str) -> String {
+    let mut result = String::new();
+    let mut chars = html.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '!' && chars.peek() == Some(&'[') {
+            chars.next(); // consume '['
+
+            // Collect alt text until ']'
+            let mut alt = String::new();
+            let mut bracket_depth = 1;
+            while let Some(ch) = chars.next() {
+                if ch == '[' {
+                    bracket_depth += 1;
+                    alt.push(ch);
+                } else if ch == ']' {
+                    bracket_depth -= 1;
+                    if bracket_depth == 0 {
+                        break;
+                    }
+                    alt.push(ch);
+                } else {
+                    alt.push(ch);
+                }
+            }
+
+            // Check for '(' after ']'
+            if chars.peek() == Some(&'(') {
+                chars.next(); // consume '('
+
+                // Collect URL until ')'
+                let mut url = String::new();
+                let mut paren_depth = 1;
+                while let Some(ch) = chars.next() {
+                    if ch == '(' {
+                        paren_depth += 1;
+                        url.push(ch);
+                    } else if ch == ')' {
+                        paren_depth -= 1;
+                        if paren_depth == 0 {
+                            break;
+                        }
+                        url.push(ch);
+                    } else {
+                        url.push(ch);
+                    }
+                }
+
+                // Output as <img> tag
+                result.push_str(&format!(r#"<img src="{}" alt="{}">"#, url, alt));
+            } else {
+                // Not an image, output as-is
+                result.push('!');
+                result.push('[');
+                result.push_str(&alt);
+                result.push(']');
             }
         } else {
             result.push(c);

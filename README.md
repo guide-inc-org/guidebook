@@ -6,14 +6,16 @@ A fast, HonKit/GitBook-compatible static site generator written in Rust.
 
 - **GitBook/HonKit Compatible** - Drop-in replacement for GitBook/HonKit projects
 - **Fast** - Built with Rust for maximum performance
+- **Hot Reload** - Live preview server with automatic rebuild on file changes
 - **Multi-language Support** - Build books in multiple languages with `LANGS.md`
 - **Mermaid Diagrams** - Native support for Mermaid diagram rendering
 - **Collapsible Chapters** - Sidebar with expandable/collapsible chapter navigation
+- **Page Navigation** - Previous/Next page arrows for easy navigation
 - **SPA Navigation** - Smooth page transitions without full page reloads
 - **Japanese Support** - Proper handling of Japanese characters in heading IDs and anchors
 - **Full-width Space Tolerance** - Automatically handles full-width spaces in Markdown headings
 - **Custom Styles** - Load custom CSS from `styles/website.css`
-- **Auto-link URLs** - Bare URLs are automatically converted to clickable links
+- **Auto-link URLs** - Bare URLs are automatically converted to clickable links (except in code blocks)
 - **Sidebar State Persistence** - Sidebar open/close state is saved in localStorage
 
 ## Installation
@@ -34,9 +36,33 @@ The binary will be available at `target/release/rustbook`.
 # Build a book
 rustbook build <source-directory> -o <output-directory>
 
-# Example
+# Start development server with hot reload
+rustbook serve <source-directory> -p <port>
+
+# Examples
 rustbook build ./my-book -o ./dist
+rustbook serve ./my-book -p 4000
 ```
+
+### Serve Command (Hot Reload)
+
+The `serve` command starts a local development server with hot reload:
+
+```bash
+rustbook serve ./my-book -p 4000
+```
+
+```
+📚 Serving book at http://localhost:4000/
+   🔥 Hot reload enabled - changes will auto-refresh
+   Press Ctrl+C to stop
+```
+
+**Features:**
+- Watches source files (`.md`, `.json`, `.css`, `.js`) for changes
+- Automatically rebuilds when files are modified
+- Browser auto-refreshes after rebuild (1 second polling)
+- Previous/Next navigation arrows on each page
 
 ## Project Structure
 
@@ -137,12 +163,17 @@ The CSS file path is configured in `book.json` under `styles.website`.
 | Auto-link URLs | ✅ |
 | Sidebar state persistence | ✅ |
 | Image paths with spaces | ✅ |
+| Hot reload (serve command) | ✅ |
+| Page navigation (prev/next) | ✅ |
 
 ## Development
 
 ```bash
 # Run in development
 cargo run -- build <source> -o <output>
+
+# Run dev server with hot reload
+cargo run -- serve <source> -p 4000
 
 # Run tests
 cargo test
