@@ -99,7 +99,6 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig) -> Resul
             Some("index.html"),
         )?;
         fs::write(output.join("index.html"), page_html)?;
-        println!("  Built: index.html");
         stats.pages += 1;
     }
 
@@ -153,7 +152,6 @@ fn build_multi_lang_book(
         };
 
         let lang_stats = build_single_book(&lang_source, &lang_output, &lang_config)?;
-        println!("  found {} pages", lang_stats.pages);
         stats.pages += lang_stats.pages;
         stats.assets += lang_stats.assets;
     }
@@ -213,7 +211,6 @@ fn build_chapters(
                         fs::create_dir_all(parent)?;
                     }
                     fs::write(&dest_file, page_html)?;
-                    println!("  Built: {}", html_path);
                     count += 1;
                 } else {
                     println!("  Warning: {} not found", md_path);
