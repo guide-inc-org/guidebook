@@ -1,3 +1,12 @@
+# Rust build output
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
 # Playwright
 .playwright-mcp/
 
