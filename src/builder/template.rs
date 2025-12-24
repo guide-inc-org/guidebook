@@ -101,6 +101,29 @@ fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
     pages
 }
 
+/// Check if any descendant of items contains the current path
+fn contains_current_path(items: &[SummaryItem], current_path: Option<&str>) -> bool {
+    let current = match current_path {
+        Some(p) => p,
+        None => return false,
+    };
+
+    for item in items {
+        if let SummaryItem::Link { path, children, .. } = item {
+            if let Some(md_path) = path {
+                let html_path = md_path.replace(".md", ".html");
+                if html_path == current {
+                    return true;
+                }
+            }
+            if contains_current_path(children, current_path) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str) -> String {
     let mut html = String::new();
 
@@ -113,12 +136,16 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
                 }).unwrap_or(false);
 
                 let has_children = !children.is_empty();
+                // Expand if this item or any descendant is active
+                let should_expand = is_active || contains_current_path(children, current_path);
+
                 let active_class = if is_active { " active" } else { "" };
                 let expandable_class = if has_children { " expandable" } else { "" };
+                let expanded_class = if has_children && should_expand { " expanded" } else { "" };
 
                 html.push_str(&format!(
-                    r#"<li class="chapter{}{}">"#,
-                    active_class, expandable_class
+                    r#"<li class="chapter{}{}{}">"#,
+                    active_class, expandable_class, expanded_class
                 ));
 
                 if let Some(ref hp) = html_path {

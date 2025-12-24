@@ -195,14 +195,38 @@
                     document.title = newTitle.textContent;
                 }
 
-                // Update active state in sidebar
-                document.querySelectorAll('.book-summary .chapter').forEach(function(ch) {
+                // Update active state in sidebar (don't replace HTML to preserve expanded state)
+                document.querySelectorAll('.book-summary .chapter.active').forEach(function(ch) {
                     ch.classList.remove('active');
                 });
-                if (clickedLink) {
-                    var chapter = clickedLink.closest('.chapter');
-                    if (chapter) chapter.classList.add('active');
-                }
+
+                // Find and mark new active item
+                var newActiveHref = url.replace(/^\.\//, '').split('#')[0];
+                document.querySelectorAll('.book-summary .chapter a').forEach(function(link) {
+                    var href = link.getAttribute('href');
+                    if (href === newActiveHref || href === './' + newActiveHref) {
+                        var chapter = link.closest('.chapter');
+                        if (chapter) {
+                            chapter.classList.add('active');
+                            // Expand parent chapters
+                            var parent = chapter.parentElement;
+                            while (parent) {
+                                if (parent.classList && parent.classList.contains('chapter')) {
+                                    parent.classList.add('expanded');
+                                }
+                                parent = parent.parentElement;
+                            }
+                        }
+                    }
+                });
+
+                // Scroll active item into view
+                setTimeout(function() {
+                    var activeItem = document.querySelector('.book-summary .chapter.active');
+                    if (activeItem) {
+                        activeItem.scrollIntoView({ block: 'center', behavior: 'auto' });
+                    }
+                }, 50);
 
                 // Update URL
                 history.pushState(null, '', url);
@@ -301,4 +325,25 @@
     } else {
         window.addEventListener('load', scrollToHashOnLoad);
     }
+
+    // Scroll active item into view in sidebar
+    function scrollActiveIntoView() {
+        var activeItem = document.querySelector('.book-summary .chapter.active');
+        if (activeItem) {
+            var sidebar = document.querySelector('.book-summary');
+            if (sidebar) {
+                // Get position relative to sidebar
+                var itemRect = activeItem.getBoundingClientRect();
+                var sidebarRect = sidebar.getBoundingClientRect();
+
+                // Check if item is outside visible area
+                if (itemRect.top < sidebarRect.top || itemRect.bottom > sidebarRect.bottom) {
+                    activeItem.scrollIntoView({ block: 'center', behavior: 'auto' });
+                }
+            }
+        }
+    }
+
+    // Scroll to active item on page load
+    setTimeout(scrollActiveIntoView, 50);
 })();
