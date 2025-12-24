@@ -20,7 +20,44 @@ A fast, HonKit/GitBook-compatible static site generator written in Rust.
 
 ## Installation
 
-### From Source
+### Step 1: Install Rust
+
+**Mac / Linux:**
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**Windows:**
+
+https://rustup.rs/ からインストーラーをダウンロードして実行してください。
+
+インストール後、ターミナルを再起動してください。
+
+### Step 2: Install guidebook
+
+```bash
+cargo install guidebook
+```
+
+### Step 3: Verify Installation
+
+```bash
+guidebook --version
+```
+
+## Quick Start
+
+```bash
+# ドキュメントのあるフォルダに移動
+cd your-book-folder
+
+# プレビューサーバーを起動（ホットリロード付き）
+guidebook serve
+
+# ブラウザで http://localhost:4000 を開く
+```
+
+### From Source (開発者向け)
 
 ```bash
 git clone https://github.com/guide-inc-org/guidebook.git
