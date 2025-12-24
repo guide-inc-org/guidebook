@@ -265,7 +265,7 @@ fn generate_lang_index(output: &Path, languages: &[Language], config: &BookConfi
         <title>Choose a language · {}</title>
         <meta http-equiv="X-UA-Compatible" content="IE=edge" />
         <meta name="description" content="">
-        <meta name="generator" content="rustbook">
+        <meta name="generator" content="guidebook">
         <link rel="stylesheet" href="gitbook/style.css">
         <meta name="HandheldFriendly" content="true"/>
         <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">

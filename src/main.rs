@@ -11,7 +11,7 @@ use notify::{Watcher, RecursiveMode, Event, EventKind};
 use notify::event::ModifyKind;
 
 #[derive(Parser)]
-#[command(name = "rustbook")]
+#[command(name = "guidebook")]
 #[command(about = "HonKit/GitBook compatible static book generator", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
 
 fn serve_book(source: &PathBuf, port: u16) -> Result<()> {
     // Build to temp directory
-    let temp_dir = std::env::temp_dir().join("rustbook-serve");
+    let temp_dir = std::env::temp_dir().join("guidebook-serve");
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir)?;
     }

@@ -1,4 +1,4 @@
-# rustbook
+# guidebook
 
 A fast, HonKit/GitBook-compatible static site generator written in Rust.
 
@@ -23,25 +23,25 @@ A fast, HonKit/GitBook-compatible static site generator written in Rust.
 ### From Source
 
 ```bash
-git clone https://github.com/guide-inc-org/rustbook.git
-cd rustbook
+git clone https://github.com/guide-inc-org/guidebook.git
+cd guidebook
 cargo build --release
 ```
 
-The binary will be available at `target/release/rustbook`.
+The binary will be available at `target/release/guidebook`.
 
 ## Usage
 
 ```bash
 # Build a book
-rustbook build <source-directory> -o <output-directory>
+guidebook build <source-directory> -o <output-directory>
 
 # Start development server with hot reload
-rustbook serve <source-directory> -p <port>
+guidebook serve <source-directory> -p <port>
 
 # Examples
-rustbook build ./my-book -o ./dist
-rustbook serve ./my-book -p 4000
+guidebook build ./my-book -o ./dist
+guidebook serve ./my-book -p 4000
 ```
 
 ### Serve Command (Hot Reload)
@@ -49,7 +49,7 @@ rustbook serve ./my-book -p 4000
 The `serve` command starts a local development server with hot reload:
 
 ```bash
-rustbook serve ./my-book -p 4000
+guidebook serve ./my-book -p 4000
 ```
 
 ```
@@ -66,7 +66,7 @@ rustbook serve ./my-book -p 4000
 
 ## Project Structure
 
-rustbook expects a GitBook/HonKit-compatible project structure:
+guidebook expects a GitBook/HonKit-compatible project structure:
 
 ```
 my-book/

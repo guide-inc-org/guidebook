@@ -34,7 +34,7 @@
     if (sidebarToggle && book && bookSummary) {
         // Restore sidebar state from localStorage (desktop only)
         if (!isMobile()) {
-            var sidebarHidden = localStorage.getItem('rustbook-sidebar-hidden') === 'true';
+            var sidebarHidden = localStorage.getItem('guidebook-sidebar-hidden') === 'true';
             if (sidebarHidden) {
                 book.classList.add('sidebar-hidden');
             }
@@ -49,7 +49,7 @@
                 book.classList.add('sidebar-toggling');
                 book.classList.toggle('sidebar-hidden');
                 var isHidden = book.classList.contains('sidebar-hidden');
-                localStorage.setItem('rustbook-sidebar-hidden', isHidden);
+                localStorage.setItem('guidebook-sidebar-hidden', isHidden);
                 setTimeout(function() {
                     book.classList.remove('sidebar-toggling');
                 }, 350);
@@ -77,7 +77,7 @@
                 } else {
                     // Switched to desktop: reset mobile state, restore desktop state
                     bookSummary.classList.remove('open');
-                    var sidebarHidden = localStorage.getItem('rustbook-sidebar-hidden') === 'true';
+                    var sidebarHidden = localStorage.getItem('guidebook-sidebar-hidden') === 'true';
                     if (sidebarHidden) {
                         book.classList.add('sidebar-hidden');
                     } else {

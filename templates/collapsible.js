@@ -3,7 +3,7 @@
 (function() {
     'use strict';
 
-    var STORAGE_KEY = 'rustbook-expanded-chapters';
+    var STORAGE_KEY = 'guidebook-expanded-chapters';
 
     // Load expanded state from localStorage
     function loadExpandedState() {
