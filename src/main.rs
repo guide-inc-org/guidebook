@@ -12,6 +12,7 @@ use notify::event::ModifyKind;
 
 #[derive(Parser)]
 #[command(name = "guidebook")]
+#[command(version)]
 #[command(about = "HonKit/GitBook compatible static book generator", long_about = None)]
 struct Cli {
     #[command(subcommand)]
