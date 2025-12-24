@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "HonKit/GitBook compatible static book generator"
 license = "MIT"
+repository = "https://github.com/guide-inc-org/rustbook"
+homepage = "https://github.com/guide-inc-org/rustbook"
+readme = "README.md"
+keywords = ["gitbook", "honkit", "markdown", "documentation", "static-site"]
+categories = ["command-line-utilities", "development-tools"]
+authors = ["guide-inc-org"]
 
 [dependencies]
 # CLI
