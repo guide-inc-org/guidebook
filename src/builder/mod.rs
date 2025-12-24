@@ -5,9 +5,17 @@ use crate::parser::{self, BookConfig, Language, Summary, SummaryItem};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 pub use renderer::{render_markdown, render_markdown_with_path};
 pub use template::Templates;
+
+/// Build statistics
+#[derive(Default)]
+struct BuildStats {
+    pages: usize,
+    assets: usize,
+}
 
 // Embed static assets at compile time
 const GITBOOK_CSS: &str = include_str!("../../templates/gitbook.css");
@@ -16,6 +24,7 @@ const COLLAPSIBLE_JS: &str = include_str!("../../templates/collapsible.js");
 
 /// Build the book from source directory to output directory
 pub fn build(source: &Path, output: &Path) -> Result<()> {
+    let start_time = Instant::now();
     let source = source.canonicalize().context("Source directory not found")?;
 
     println!("Loading book configuration...");
@@ -25,10 +34,10 @@ pub fn build(source: &Path, output: &Path) -> Result<()> {
     // Check for multi-language book
     let languages = parser::langs::parse_langs(&source)?;
 
-    if languages.is_empty() {
+    let stats = if languages.is_empty() {
         // Single language book
         println!("Building single-language book...");
-        build_single_book(&source, output, &config)?;
+        build_single_book(&source, output, &config)?
     } else {
         // Multi-language book
         println!("Building multi-language book with {} languages:", languages.len());
@@ -36,16 +45,23 @@ pub fn build(source: &Path, output: &Path) -> Result<()> {
             println!("  - {} ({})", lang.title, lang.code);
         }
 
-        build_multi_lang_book(&source, output, &config, &languages)?;
-    }
+        build_multi_lang_book(&source, output, &config, &languages)?
+    };
 
-    println!("Build complete! Output at: {:?}", output);
+    let elapsed = start_time.elapsed();
+    let elapsed_secs = elapsed.as_secs_f64();
+
+    println!();
+    println!(">> generation finished with success in {:.1}s !", elapsed_secs);
+    println!("   {} pages built, {} asset files copied", stats.pages, stats.assets);
+
     Ok(())
 }
 
-fn build_single_book(source: &Path, output: &Path, config: &BookConfig) -> Result<()> {
+fn build_single_book(source: &Path, output: &Path, config: &BookConfig) -> Result<BuildStats> {
     let summary = Summary::parse(source)?;
     let templates = Templates::new(config)?;
+    let mut stats = BuildStats::default();
 
     // Create output directory
     fs::create_dir_all(output)?;
@@ -54,7 +70,7 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig) -> Resul
     write_static_assets(output, config)?;
 
     // Copy assets
-    copy_assets(source, output)?;
+    stats.assets += copy_assets(source, output)?;
 
     // Copy custom styles if configured
     if let Some(style_path) = config.get_website_style() {
@@ -67,7 +83,7 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig) -> Resul
     }
 
     // Build each chapter
-    build_chapters(source, output, &summary.items, config, &templates, &summary)?;
+    stats.pages += build_chapters(source, output, &summary.items, config, &templates, &summary)?;
 
     // Generate index.html from README.md if exists
     let readme_path = source.join("README.md");
@@ -84,9 +100,10 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig) -> Resul
         )?;
         fs::write(output.join("index.html"), page_html)?;
         println!("  Built: index.html");
+        stats.pages += 1;
     }
 
-    Ok(())
+    Ok(stats)
 }
 
 fn write_static_assets(output: &Path, config: &BookConfig) -> Result<()> {
@@ -112,7 +129,9 @@ fn build_multi_lang_book(
     output: &Path,
     config: &BookConfig,
     languages: &[Language],
-) -> Result<()> {
+) -> Result<BuildStats> {
+    let mut stats = BuildStats::default();
+
     // Create output directory
     fs::create_dir_all(output)?;
 
@@ -133,16 +152,19 @@ fn build_multi_lang_book(
             config.clone()
         };
 
-        build_single_book(&lang_source, &lang_output, &lang_config)?;
+        let lang_stats = build_single_book(&lang_source, &lang_output, &lang_config)?;
+        println!("  found {} pages", lang_stats.pages);
+        stats.pages += lang_stats.pages;
+        stats.assets += lang_stats.assets;
     }
 
     // Copy root assets if they exist
     let assets_dir = source.join("assets");
     if assets_dir.exists() {
-        copy_dir_recursive(&assets_dir, &output.join("assets"))?;
+        stats.assets += copy_dir_recursive_count(&assets_dir, &output.join("assets"))?;
     }
 
-    Ok(())
+    Ok(stats)
 }
 
 fn build_chapters(
@@ -152,7 +174,9 @@ fn build_chapters(
     config: &BookConfig,
     templates: &Templates,
     summary: &Summary,
-) -> Result<()> {
+) -> Result<usize> {
+    let mut count = 0;
+
     for item in items {
         if let SummaryItem::Link { title, path, children } = item {
             if let Some(md_path) = path {
@@ -190,6 +214,7 @@ fn build_chapters(
                     }
                     fs::write(&dest_file, page_html)?;
                     println!("  Built: {}", html_path);
+                    count += 1;
                 } else {
                     println!("  Warning: {} not found", md_path);
                 }
@@ -197,28 +222,30 @@ fn build_chapters(
 
             // Build children recursively
             if !children.is_empty() {
-                build_chapters(source, output, children, config, templates, summary)?;
+                count += build_chapters(source, output, children, config, templates, summary)?;
             }
         }
     }
 
-    Ok(())
+    Ok(count)
 }
 
-fn copy_assets(source: &Path, output: &Path) -> Result<()> {
+fn copy_assets(source: &Path, output: &Path) -> Result<usize> {
+    let mut count = 0;
     // Copy common asset directories
     for dir_name in &["assets", "images", "img"] {
         let src_dir = source.join(dir_name);
         if src_dir.exists() {
             let dest_dir = output.join(dir_name);
-            copy_dir_recursive(&src_dir, &dest_dir)?;
+            count += copy_dir_recursive_count(&src_dir, &dest_dir)?;
         }
     }
-    Ok(())
+    Ok(count)
 }
 
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+fn copy_dir_recursive_count(src: &Path, dest: &Path) -> Result<usize> {
     fs::create_dir_all(dest)?;
+    let mut count = 0;
 
     for entry in walkdir::WalkDir::new(src) {
         let entry = entry?;
@@ -232,10 +259,11 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
                 fs::create_dir_all(parent)?;
             }
             fs::copy(entry.path(), &dest_path)?;
+            count += 1;
         }
     }
 
-    Ok(())
+    Ok(count)
 }
 
 fn generate_lang_index(output: &Path, languages: &[Language], config: &BookConfig) -> Result<()> {
