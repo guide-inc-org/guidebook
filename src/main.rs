@@ -10,6 +10,8 @@ use tiny_http::{Server, Response, Header};
 use notify::{Watcher, RecursiveMode, Event, EventKind};
 use notify::event::ModifyKind;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser)]
 #[command(name = "guidebook")]
 #[command(version)]
@@ -48,6 +50,9 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Check for updates in background (non-blocking)
+    check_for_updates();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -233,4 +238,54 @@ fn get_content_type(path: &PathBuf) -> &'static str {
         Some("ttf") => "font/ttf",
         _ => "application/octet-stream",
     }
+}
+
+fn check_for_updates() {
+    // Run in a separate thread to not block startup
+    std::thread::spawn(|| {
+        if let Some(latest) = get_latest_version() {
+            if is_newer_version(&latest, VERSION) {
+                eprintln!(
+                    "\n📦 New version available: {} → {}\n   Run: cargo install guidebook --force\n",
+                    VERSION, latest
+                );
+            }
+        }
+    });
+}
+
+fn get_latest_version() -> Option<String> {
+    let response = ureq::get("https://crates.io/api/v1/crates/guidebook")
+        .set("User-Agent", &format!("guidebook/{}", VERSION))
+        .timeout(std::time::Duration::from_secs(2))
+        .call()
+        .ok()?;
+
+    let body = response.into_string().ok()?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    json["crate"]["max_version"]
+        .as_str()
+        .map(String::from)
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.split('.')
+            .filter_map(|p| p.parse().ok())
+            .collect()
+    };
+
+    let latest_parts = parse(latest);
+    let current_parts = parse(current);
+
+    for (l, c) in latest_parts.iter().zip(current_parts.iter()) {
+        if l > c {
+            return true;
+        }
+        if l < c {
+            return false;
+        }
+    }
+
+    latest_parts.len() > current_parts.len()
 }

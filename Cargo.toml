@@ -1,6 +1,6 @@
 [package]
 name = "guidebook"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "HonKit/GitBook compatible static book generator"
 license = "MIT"
@@ -40,3 +40,6 @@ tiny_http = "0.12"
 
 # File watching for hot reload
 notify = "6"
+
+# HTTP client for update check
+ureq = "2"
