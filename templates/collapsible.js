@@ -80,18 +80,22 @@
     sidebar.addEventListener('click', function(e) {
         var link = e.target.closest('a');
         var titleSpan = e.target.closest('.chapter-title');
-        var chapter = e.target.closest('.chapter.expandable');
 
-        if (!chapter) return;
+        // Get the direct parent chapter of the clicked element
+        var directChapter = (link || titleSpan)?.closest('.chapter');
+        if (!directChapter) return;
 
-        var articles = chapter.querySelector('.articles');
+        // Only handle if the direct chapter is expandable
+        if (!directChapter.classList.contains('expandable')) return;
+
+        var articles = directChapter.querySelector(':scope > .articles');
         if (!articles) return;
 
         // If clicked on chapter-title (no link), toggle expand
         if (titleSpan && !link) {
             e.preventDefault();
             e.stopImmediatePropagation();
-            chapter.classList.toggle('expanded');
+            directChapter.classList.toggle('expanded');
             saveCurrentState();
             return;
         }
@@ -100,7 +104,7 @@
         if (link) {
             e.preventDefault();
             e.stopImmediatePropagation();
-            chapter.classList.toggle('expanded');
+            directChapter.classList.toggle('expanded');
             saveCurrentState();
         }
     });

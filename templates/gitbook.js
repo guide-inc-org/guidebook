@@ -250,6 +250,10 @@
             var link = e.target.closest('a');
             if (!link) return;
 
+            // Skip SPA navigation for expandable items with children (handled by collapsible.js)
+            var directChapter = link.closest('.chapter');
+            if (directChapter && directChapter.classList.contains('expandable') && directChapter.querySelector(':scope > .articles')) return;
+
             var href = link.getAttribute('href');
             if (!href || href.startsWith('#') || href.startsWith('http')) return;
 
