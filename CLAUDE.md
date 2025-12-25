@@ -27,22 +27,28 @@ cargo test
 ## Release Procedure
 
 1. Update version in `Cargo.toml`
-2. Commit & push
-3. Create and push tag (binary is auto-generated to GitHub Releases)
-4. Publish to crates.io
+2. Run `cargo check` to update `Cargo.lock`
+3. Commit & push (includes both Cargo.toml and Cargo.lock)
+4. Create and push tag (binary is auto-generated to GitHub Releases)
+5. Publish to crates.io
 
 ```bash
-# After version update
+# 1. Update version in Cargo.toml, then:
+cargo check
+
+# 2. Commit everything (Cargo.toml + Cargo.lock)
 git add -A && git commit -m "Bump version to vX.Y.Z"
 git push origin main
 
-# Create & push tag (triggers release workflow)
+# 3. Create & push tag (triggers release workflow)
 git tag vX.Y.Z
 git push origin vX.Y.Z
 
-# Publish to crates.io
+# 4. Publish to crates.io
 cargo publish
 ```
+
+**Important:** Always run `cargo check` after updating version to ensure `Cargo.lock` is updated before committing. This prevents having to make a separate commit for `Cargo.lock` after publishing.
 
 ## Directory Structure
 
