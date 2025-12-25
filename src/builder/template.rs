@@ -146,8 +146,8 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
                 }).unwrap_or(false);
 
                 let has_children = !children.is_empty();
-                // Expand if this item or any descendant is active, or if collapsible is disabled
-                let should_expand = !collapsible || is_active || contains_current_path(children, current_path);
+                // Always expand by default. User can collapse via JS, state saved in localStorage
+                let should_expand = has_children;
 
                 let active_class = if is_active { " active" } else { "" };
                 // Only add expandable class if collapsible plugin is enabled

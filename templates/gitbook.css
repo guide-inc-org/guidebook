@@ -163,9 +163,8 @@ body {
 }
 
 .book-summary .summary li.chapter .chapter-title {
-    color: #888;
-    font-weight: 600;
-    cursor: default;
+    color: #364149;
+    cursor: pointer;
 }
 
 /* Nested chapters */

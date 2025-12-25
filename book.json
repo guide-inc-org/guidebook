@@ -1,0 +1,8 @@
+{
+    "title": "My Book",
+    "plugins": [
+        "collapsible-chapters",
+        "back-to-top-button",
+        "mermaid-md-adoc"
+    ]
+}

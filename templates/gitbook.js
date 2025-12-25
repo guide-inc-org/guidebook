@@ -335,14 +335,6 @@
                     }
                 });
 
-                // Scroll active item into view
-                setTimeout(function() {
-                    var activeItem = document.querySelector('.book-summary .chapter.active');
-                    if (activeItem) {
-                        activeItem.scrollIntoView({ block: 'center', behavior: 'auto' });
-                    }
-                }, 50);
-
                 // Update URL (use absolute URL to avoid relative path issues with SPA navigation)
                 history.pushState(null, '', absoluteUrl);
 
@@ -473,24 +465,4 @@
         window.addEventListener('load', scrollToHashOnLoad);
     }
 
-    // Scroll active item into view in sidebar
-    function scrollActiveIntoView() {
-        var activeItem = document.querySelector('.book-summary .chapter.active');
-        if (activeItem) {
-            var sidebar = document.querySelector('.book-summary');
-            if (sidebar) {
-                // Get position relative to sidebar
-                var itemRect = activeItem.getBoundingClientRect();
-                var sidebarRect = sidebar.getBoundingClientRect();
-
-                // Check if item is outside visible area
-                if (itemRect.top < sidebarRect.top || itemRect.bottom > sidebarRect.bottom) {
-                    activeItem.scrollIntoView({ block: 'center', behavior: 'auto' });
-                }
-            }
-        }
-    }
-
-    // Scroll to active item on page load
-    setTimeout(scrollActiveIntoView, 50);
 })();

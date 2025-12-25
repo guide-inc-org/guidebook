@@ -96,17 +96,12 @@
             return;
         }
 
-        // If clicked on link, check if it's on the arrow area (left 25px)
+        // If clicked on link with children, toggle expand/collapse
         if (link) {
-            var rect = link.getBoundingClientRect();
-            var clickX = e.clientX - rect.left;
-
-            if (clickX < 25) {
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                chapter.classList.toggle('expanded');
-                saveCurrentState();
-            }
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            chapter.classList.toggle('expanded');
+            saveCurrentState();
         }
     });
 })();
