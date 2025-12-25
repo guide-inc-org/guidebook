@@ -30,7 +30,18 @@ impl BookConfig {
         let config_path = book_dir.join("book.json");
 
         if !config_path.exists() {
-            return Ok(Self::default());
+            // Create default book.json with all plugins enabled
+            let default_json = r#"{
+    "title": "My Book",
+    "plugins": [
+        "collapsible-chapters",
+        "back-to-top-button",
+        "mermaid-md-adoc"
+    ]
+}
+"#;
+            fs::write(&config_path, default_json)?;
+            println!("  Created default book.json");
         }
 
         let content = fs::read_to_string(&config_path)?;
