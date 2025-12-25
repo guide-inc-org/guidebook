@@ -47,7 +47,6 @@ impl Templates {
 
         // Check plugin features
         context.insert("back_to_top", &config.is_plugin_enabled("back-to-top-button"));
-        context.insert("collapsible", &config.is_plugin_enabled("collapsible-chapters"));
         context.insert("mermaid", &config.is_plugin_enabled("mermaid-md-adoc"));
 
         // Generate TOC HTML
@@ -308,9 +307,7 @@ const PAGE_TEMPLATE: &str = r##"<!DOCTYPE html>
     {% endif %}
 
     <script src="{{ root_path }}gitbook/gitbook.js"></script>
-    {% if collapsible %}
     <script src="{{ root_path }}gitbook/collapsible.js"></script>
-    {% endif %}
     <script src="{{ root_path }}gitbook/search.js"></script>
 </body>
 </html>

@@ -137,10 +137,8 @@ fn write_static_assets(output: &Path, config: &BookConfig) -> Result<()> {
     // Write JS
     fs::write(gitbook_dir.join("gitbook.js"), GITBOOK_JS)?;
 
-    // Write collapsible JS if enabled
-    if config.is_plugin_enabled("collapsible-chapters") {
-        fs::write(gitbook_dir.join("collapsible.js"), COLLAPSIBLE_JS)?;
-    }
+    // Write collapsible JS (always enabled for sidebar expand/collapse)
+    fs::write(gitbook_dir.join("collapsible.js"), COLLAPSIBLE_JS)?;
 
     // Write search JS
     fs::write(gitbook_dir.join("search.js"), SEARCH_JS)?;
