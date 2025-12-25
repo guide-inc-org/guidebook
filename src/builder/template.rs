@@ -34,8 +34,12 @@ impl Templates {
         context.insert("content", content);
         context.insert("root_path", root_path);
 
+        // Check plugin features
+        let collapsible = config.is_plugin_enabled("collapsible-chapters");
+        context.insert("collapsible", &collapsible);
+
         // Generate sidebar HTML - links need root_path prefix
-        let sidebar = generate_sidebar(&summary.items, current_path, root_path);
+        let sidebar = generate_sidebar(&summary.items, current_path, root_path, collapsible);
         context.insert("sidebar", &sidebar);
 
         // Generate prev/next navigation
@@ -130,7 +134,7 @@ fn contains_current_path(items: &[SummaryItem], current_path: Option<&str>) -> b
     false
 }
 
-fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str) -> String {
+fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str, collapsible: bool) -> String {
     let mut html = String::new();
 
     for item in items {
@@ -142,11 +146,12 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
                 }).unwrap_or(false);
 
                 let has_children = !children.is_empty();
-                // Expand if this item or any descendant is active
-                let should_expand = is_active || contains_current_path(children, current_path);
+                // Expand if this item or any descendant is active, or if collapsible is disabled
+                let should_expand = !collapsible || is_active || contains_current_path(children, current_path);
 
                 let active_class = if is_active { " active" } else { "" };
-                let expandable_class = if has_children { " expandable" } else { "" };
+                // Only add expandable class if collapsible plugin is enabled
+                let expandable_class = if has_children && collapsible { " expandable" } else { "" };
                 let expanded_class = if has_children && should_expand { " expanded" } else { "" };
 
                 html.push_str(&format!(
@@ -168,7 +173,7 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
 
                 if has_children {
                     html.push_str("<ul class=\"articles\">");
-                    html.push_str(&generate_sidebar(children, current_path, prefix));
+                    html.push_str(&generate_sidebar(children, current_path, prefix, collapsible));
                     html.push_str("</ul>");
                 }
 
@@ -307,7 +312,9 @@ const PAGE_TEMPLATE: &str = r##"<!DOCTYPE html>
     {% endif %}
 
     <script src="{{ root_path }}gitbook/gitbook.js"></script>
+    {% if collapsible %}
     <script src="{{ root_path }}gitbook/collapsible.js"></script>
+    {% endif %}
     <script src="{{ root_path }}gitbook/search.js"></script>
 </body>
 </html>
