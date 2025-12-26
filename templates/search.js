@@ -7,6 +7,7 @@
     var searchInput = document.querySelector('.search-input');
     var searchResults = document.querySelector('.search-results');
     var searchWrapper = document.querySelector('.search-wrapper');
+    var rootPath = document.body.getAttribute('data-root-path') || '';
 
     if (!searchInput || !searchResults) return;
 
@@ -14,7 +15,6 @@
     function loadSearchIndex() {
         if (searchIndex) return Promise.resolve(searchIndex);
 
-        var rootPath = document.body.getAttribute('data-root-path') || '';
         var indexUrl = rootPath + 'search_index.json';
 
         return fetch(indexUrl)
@@ -86,7 +86,7 @@
             var highlightedTitle = highlightMatch(result.title, query);
             var highlightedSnippet = result.snippet ? highlightMatch(result.snippet, query) : '';
 
-            return '<a class="search-result-item" href="' + result.path + '">' +
+            return '<a class="search-result-item" href="' + rootPath + result.path + '">' +
                    '<div class="search-result-title">' + highlightedTitle + '</div>' +
                    (highlightedSnippet ? '<div class="search-result-snippet">' + highlightedSnippet + '</div>' : '') +
                    '</a>';
