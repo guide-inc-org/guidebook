@@ -5,10 +5,6 @@ A fast, HonKit/GitBook-compatible static site generator written in Rust.
 [![Crates.io](https://img.shields.io/crates/v/guidebook.svg)](https://crates.io/crates/guidebook)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Documentation
-
-**[Read the full documentation](https://guide-inc-org.github.io/guidebook/)**
-
 ## Quick Start
 
 ### Install
