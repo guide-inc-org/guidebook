@@ -1,0 +1,7 @@
+{
+    "title": "guidebook Documentation",
+    "plugins": [
+        "collapsible-chapters",
+        "back-to-top-button"
+    ]
+}
