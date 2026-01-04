@@ -5,7 +5,14 @@ set -e
 # Usage: curl -fsSL https://raw.githubusercontent.com/guide-inc-org/guidebook/main/install.sh | sh
 
 REPO="guide-inc-org/guidebook"
-INSTALL_DIR="/usr/local/bin"
+
+# Try /usr/local/bin first, fallback to ~/.local/bin
+if [ -w "/usr/local/bin" ]; then
+    INSTALL_DIR="/usr/local/bin"
+else
+    INSTALL_DIR="$HOME/.local/bin"
+    mkdir -p "$INSTALL_DIR"
+fi
 
 # Detect OS
 detect_os() {
@@ -55,12 +62,17 @@ main() {
     curl -fsSL "${URL}" | tar xz -C "${TMP_DIR}"
 
     # Install
-    if [ -w "${INSTALL_DIR}" ]; then
-        mv "${TMP_DIR}/guidebook" "${INSTALL_DIR}/guidebook"
-    else
-        echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-        sudo mv "${TMP_DIR}/guidebook" "${INSTALL_DIR}/guidebook"
-    fi
+    mv "${TMP_DIR}/guidebook" "${INSTALL_DIR}/guidebook"
+
+    # Check if INSTALL_DIR is in PATH
+    case ":$PATH:" in
+        *":${INSTALL_DIR}:"*) ;;
+        *)
+            echo ""
+            echo "Note: Add ${INSTALL_DIR} to your PATH:"
+            echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
+            ;;
+    esac
 
     echo ""
     echo "guidebook installed successfully!"
