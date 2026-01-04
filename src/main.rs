@@ -48,6 +48,8 @@ enum Commands {
         #[arg(short, long, default_value = "4000")]
         port: u16,
     },
+    /// Update guidebook to the latest version
+    Update,
 }
 
 fn main() -> Result<()> {
@@ -68,6 +70,9 @@ fn main() -> Result<()> {
         }
         Commands::Serve { path, port } => {
             serve_book(&path, port)
+        }
+        Commands::Update => {
+            update_self()
         }
     }
 }
@@ -304,4 +309,155 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     }
 
     latest_parts.len() > current_parts.len()
+}
+
+fn update_self() -> Result<()> {
+    use std::io::{Read, Write};
+
+    println!("Checking for updates...");
+
+    // Get latest version from GitHub
+    let latest_version = get_latest_github_version()
+        .ok_or_else(|| anyhow::anyhow!("Failed to check latest version"))?;
+
+    println!("  Current version: {}", VERSION);
+    println!("  Latest version:  {}", latest_version);
+
+    if !is_newer_version(&latest_version, VERSION) {
+        println!("\nYou're already on the latest version!");
+        return Ok(());
+    }
+
+    // Detect platform
+    let artifact_name = get_artifact_name()
+        .ok_or_else(|| anyhow::anyhow!("Unsupported platform"))?;
+
+    println!("\nDownloading {}...", artifact_name);
+
+    // Download from GitHub Releases
+    let download_url = format!(
+        "https://github.com/guide-inc-org/guidebook/releases/download/v{}/{}",
+        latest_version, artifact_name
+    );
+
+    let response = ureq::get(&download_url)
+        .set("User-Agent", &format!("guidebook/{}", VERSION))
+        .call()
+        .map_err(|e| anyhow::anyhow!("Failed to download: {}", e))?;
+
+    // Read response body
+    let mut bytes = Vec::new();
+    response.into_reader().read_to_end(&mut bytes)?;
+
+    // Get current executable path
+    let current_exe = std::env::current_exe()?;
+    let exe_dir = current_exe.parent()
+        .ok_or_else(|| anyhow::anyhow!("Cannot get executable directory"))?;
+
+    // Extract binary
+    let new_binary = if artifact_name.ends_with(".zip") {
+        extract_zip(&bytes)?
+    } else {
+        extract_tar_gz(&bytes)?
+    };
+
+    // Replace current executable
+    let backup_path = exe_dir.join("guidebook.backup");
+    let new_exe_path = exe_dir.join(if cfg!(windows) { "guidebook_new.exe" } else { "guidebook_new" });
+
+    // Write new binary
+    let mut file = fs::File::create(&new_exe_path)?;
+    file.write_all(&new_binary)?;
+
+    // Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&new_exe_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&new_exe_path, perms)?;
+    }
+
+    // Backup current executable
+    if backup_path.exists() {
+        fs::remove_file(&backup_path)?;
+    }
+    fs::rename(&current_exe, &backup_path)?;
+
+    // Move new executable to current location
+    fs::rename(&new_exe_path, &current_exe)?;
+
+    // Remove backup
+    let _ = fs::remove_file(&backup_path);
+
+    println!("\nSuccessfully updated to v{}!", latest_version);
+    Ok(())
+}
+
+fn get_latest_github_version() -> Option<String> {
+    let response = ureq::get("https://api.github.com/repos/guide-inc-org/guidebook/releases/latest")
+        .set("User-Agent", &format!("guidebook/{}", VERSION))
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .ok()?;
+
+    let body = response.into_string().ok()?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    json["tag_name"]
+        .as_str()
+        .map(|s| s.trim_start_matches('v').to_string())
+}
+
+fn get_artifact_name() -> Option<&'static str> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    match (os, arch) {
+        ("linux", "x86_64") => Some("guidebook-linux-x86_64.tar.gz"),
+        ("macos", "x86_64") => Some("guidebook-darwin-x86_64.tar.gz"),
+        ("macos", "aarch64") => Some("guidebook-darwin-arm64.tar.gz"),
+        ("windows", "x86_64") => Some("guidebook-windows-x86_64.zip"),
+        _ => None,
+    }
+}
+
+fn extract_tar_gz(data: &[u8]) -> Result<Vec<u8>> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+    use std::io::{Cursor, Read};
+
+    let decoder = GzDecoder::new(Cursor::new(data));
+    let mut archive = Archive::new(decoder);
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        if path.file_name().map(|n| n == "guidebook").unwrap_or(false) {
+            let mut binary = Vec::new();
+            entry.read_to_end(&mut binary)?;
+            return Ok(binary);
+        }
+    }
+
+    Err(anyhow::anyhow!("Binary not found in archive"))
+}
+
+fn extract_zip(data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Cursor;
+    use zip::ZipArchive;
+
+    let cursor = Cursor::new(data);
+    let mut archive = ZipArchive::new(cursor)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name().to_string();
+        if name.ends_with("guidebook.exe") || name == "guidebook.exe" {
+            let mut binary = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut binary)?;
+            return Ok(binary);
+        }
+    }
+
+    Err(anyhow::anyhow!("Binary not found in archive"))
 }

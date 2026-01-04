@@ -1,6 +1,6 @@
 [package]
 name = "guidebook"
-version = "0.1.20"
+version = "0.1.21"
 edition = "2021"
 description = "HonKit/GitBook compatible static book generator"
 license = "MIT"
@@ -46,3 +46,10 @@ ureq = "2"
 
 # URL encoding/decoding
 percent-encoding = "2"
+
+# For self-update (tar.gz extraction)
+flate2 = "1"
+tar = "0.4"
+
+# For self-update (zip extraction on Windows)
+zip = "0.6"
