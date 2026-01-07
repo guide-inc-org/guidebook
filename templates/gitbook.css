@@ -1104,6 +1104,44 @@ body.loading .markdown-section {
     color: #c8c8c8;
 }
 
+/* highlight.js dark theme overrides for night mode */
+.book.theme-night .hljs {
+    background: #2d2d2d;
+    color: #c8c8c8;
+}
+.book.theme-night .hljs-keyword,
+.book.theme-night .hljs-selector-tag,
+.book.theme-night .hljs-literal,
+.book.theme-night .hljs-section,
+.book.theme-night .hljs-link {
+    color: #cc99cc;
+}
+.book.theme-night .hljs-string,
+.book.theme-night .hljs-title,
+.book.theme-night .hljs-name,
+.book.theme-night .hljs-type,
+.book.theme-night .hljs-attribute,
+.book.theme-night .hljs-symbol,
+.book.theme-night .hljs-bullet,
+.book.theme-night .hljs-addition,
+.book.theme-night .hljs-variable,
+.book.theme-night .hljs-template-tag,
+.book.theme-night .hljs-template-variable {
+    color: #99cc99;
+}
+.book.theme-night .hljs-comment,
+.book.theme-night .hljs-quote,
+.book.theme-night .hljs-deletion,
+.book.theme-night .hljs-meta {
+    color: #999999;
+}
+.book.theme-night .hljs-number,
+.book.theme-night .hljs-regexp,
+.book.theme-night .hljs-literal,
+.book.theme-night .hljs-built_in {
+    color: #f99157;
+}
+
 .book.theme-night .markdown-section table {
     background: #1c1c1c !important;
 }

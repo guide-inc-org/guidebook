@@ -366,6 +366,13 @@
                     mermaid.init(undefined, '.markdown-section .mermaid');
                 }
 
+                // Re-apply syntax highlighting
+                if (typeof hljs !== 'undefined') {
+                    document.querySelectorAll('.markdown-section pre code').forEach(function(block) {
+                        hljs.highlightElement(block);
+                    });
+                }
+
                 // Re-apply font settings (theme styles for tables/headings)
                 if (window.guidebookFontsettings && window.guidebookFontsettings.reapply) {
                     window.guidebookFontsettings.reapply();
@@ -472,6 +479,11 @@
         scrollToHashOnLoad();
     } else {
         window.addEventListener('load', scrollToHashOnLoad);
+    }
+
+    // Initialize syntax highlighting on page load
+    if (typeof hljs !== 'undefined') {
+        hljs.highlightAll();
     }
 
 })();
