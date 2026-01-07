@@ -697,7 +697,16 @@ body.loading .markdown-section {
     right: 10px;
 }
 
+/* Adjust prev button when sidebar is hidden */
+.book.sidebar-hidden .page-nav.prev {
+    left: 10px;
+}
+
 /* Adjust content when TOC is visible */
+.book:not(.toc-hidden) .page-wrapper {
+    margin-right: 260px;
+}
+
 .book:not(.toc-hidden) .page-nav.next {
     right: 260px;
 }
@@ -713,12 +722,6 @@ body.loading .markdown-section {
     }
 }
 
-/* Adjust TOC position when sidebar is hidden */
-@media (min-width: 769px) {
-    .book.sidebar-hidden .page-wrapper {
-        max-width: calc(100% - 260px);
-    }
-}
 
 /* ==========================================================================
    Font Settings Plugin

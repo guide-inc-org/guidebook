@@ -86,6 +86,8 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     let content = fix_image_paths_with_spaces(&content);
     // Preprocess: fix multi-line footnotes without proper indentation
     let content = fix_multiline_footnotes(&content);
+    // Preprocess: fix malformed table separator rows
+    let content = fix_table_separator_columns(&content);
 
     // Convert footnote definitions to inline format (preserve original position)
     let content = convert_footnote_definitions_inline(&content, hardbreaks);
@@ -470,6 +472,116 @@ fn fix_multiline_footnotes(content: &str) -> String {
     }
 
     result.join("\n")
+}
+
+/// Fix malformed table rows:
+/// - Add missing trailing | to header rows
+/// - Fix separator rows where column count doesn't match header
+fn fix_table_separator_columns(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        // Check if this line looks like a table row (starts with |)
+        if trimmed.starts_with('|') {
+            // Check if next line is a separator row
+            if i + 1 < lines.len() {
+                let next_line = lines[i + 1];
+                if is_table_separator_row(next_line) {
+                    // This is a header row - fix missing trailing pipe if needed
+                    let fixed_header = fix_table_row_trailing_pipe(line);
+                    let header_cols = count_table_columns(&fixed_header);
+
+                    let separator_cols = count_table_columns(next_line);
+
+                    // Push the fixed header
+                    result.push(fixed_header);
+                    i += 1;
+
+                    // If column counts don't match, fix the separator row
+                    if header_cols > 0 && separator_cols != header_cols {
+                        let fixed_separator = generate_separator_row(header_cols, next_line);
+                        result.push(fixed_separator);
+                    } else {
+                        result.push(next_line.to_string());
+                    }
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        result.push(line.to_string());
+        i += 1;
+    }
+
+    result.join("\n")
+}
+
+/// Add trailing pipe to table row if missing
+fn fix_table_row_trailing_pipe(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.starts_with('|') && !trimmed.ends_with('|') {
+        format!("{}|", line)
+    } else {
+        line.to_string()
+    }
+}
+
+/// Count the number of columns in a table row
+fn count_table_columns(line: &str) -> usize {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') {
+        return 0;
+    }
+
+    // Count the | characters, accounting for leading/trailing pipes
+    let pipe_count = trimmed.chars().filter(|&c| c == '|').count();
+
+    // Number of columns = pipes - 1 (for |col1|col2|col3| format)
+    if pipe_count > 1 {
+        pipe_count - 1
+    } else {
+        0
+    }
+}
+
+/// Check if a line is a table separator row (contains only |, -, :, and whitespace)
+fn is_table_separator_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+        return false;
+    }
+
+    // Must contain at least one dash
+    if !trimmed.contains('-') {
+        return false;
+    }
+
+    // All characters must be |, -, :, or whitespace
+    trimmed.chars().all(|c| c == '|' || c == '-' || c == ':' || c.is_whitespace())
+}
+
+/// Generate a separator row with the specified number of columns
+/// Tries to preserve alignment style from the original separator
+fn generate_separator_row(col_count: usize, original: &str) -> String {
+    // Detect alignment style from original
+    let alignment = if original.contains(":--:") || original.contains(":-:") {
+        ":--:"
+    } else if original.contains(":--") || original.contains(":-") {
+        ":--"
+    } else if original.contains("--:") || original.contains("-:") {
+        "--:"
+    } else {
+        "--"
+    };
+
+    let cols: Vec<&str> = std::iter::repeat(alignment).take(col_count).collect();
+    format!("|{}|", cols.join("|"))
 }
 
 /// Fix full-width spaces after heading markers (common mistake in Japanese documents)
