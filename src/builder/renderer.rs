@@ -57,8 +57,9 @@ pub fn extract_headings(content: &str) -> Vec<TocItem> {
 
 /// Render markdown content to HTML with Mermaid support
 /// current_path: the path of the current markdown file (e.g., "Customer/AssetStatus/PortfolioTop.md")
-pub fn render_markdown_with_path(content: &str, current_path: Option<&str>) -> String {
-    let html = render_markdown_internal(content);
+/// hardbreaks: when true, treat single newlines as hard breaks (<br>)
+pub fn render_markdown_with_path(content: &str, current_path: Option<&str>, hardbreaks: bool) -> String {
+    let html = render_markdown_internal(content, hardbreaks);
 
     // If we have a current path, convert relative links to absolute
     if let Some(path) = current_path {
@@ -70,10 +71,15 @@ pub fn render_markdown_with_path(content: &str, current_path: Option<&str>) -> S
 
 /// Render markdown content to HTML (backward compatible)
 pub fn render_markdown(content: &str) -> String {
-    render_markdown_internal(content)
+    render_markdown_internal(content, false)
 }
 
-fn render_markdown_internal(content: &str) -> String {
+/// Render markdown content to HTML with hardbreaks option
+pub fn render_markdown_with_hardbreaks(content: &str, hardbreaks: bool) -> String {
+    render_markdown_internal(content, hardbreaks)
+}
+
+fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     // Preprocess: fix full-width spaces after heading markers
     let content = fix_fullwidth_heading_spaces(content);
     // Preprocess: fix image paths with spaces
@@ -82,7 +88,7 @@ fn render_markdown_internal(content: &str) -> String {
     let content = fix_multiline_footnotes(&content);
 
     // Convert footnote definitions to inline format (preserve original position)
-    let content = convert_footnote_definitions_inline(&content);
+    let content = convert_footnote_definitions_inline(&content, hardbreaks);
 
     // Convert footnote references [^n] to placeholders BEFORE markdown parsing
     // This prevents [A][^1] from being interpreted as a markdown link reference
@@ -165,6 +171,11 @@ fn render_markdown_internal(content: &str) -> String {
                 in_heading = None;
                 continue;
             }
+            // Convert soft breaks to hard breaks when hardbreaks option is enabled
+            Event::SoftBreak if hardbreaks => {
+                events.push(Event::HardBreak);
+                continue;
+            }
             _ => {}
         }
         events.push(event);
@@ -234,7 +245,7 @@ fn html_escape(s: &str) -> String {
 
 
 /// Convert footnote definitions in-place to HTML (preserve original position)
-fn convert_footnote_definitions_inline(content: &str) -> String {
+fn convert_footnote_definitions_inline(content: &str, hardbreaks: bool) -> String {
     let mut result_lines = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
     let mut i = 0;
@@ -244,6 +255,8 @@ fn convert_footnote_definitions_inline(content: &str) -> String {
         // Check if this line starts a footnote definition [^n]:
         if let Some(captures) = parse_footnote_def_start(line) {
             let (number, first_line_content) = captures;
+            // Trim trailing whitespace from first line (for hardbreaks consistency)
+            let first_line_content = first_line_content.trim_end();
             let mut continuation_lines: Vec<String> = Vec::new();
 
             // Collect continuation lines (indented or list items until next footnote/heading/blank)
@@ -285,7 +298,7 @@ fn convert_footnote_definitions_inline(content: &str) -> String {
             } else {
                 // Multi-line footnote: first line with return link, then rest as markdown
                 let continuation_content = continuation_lines.join("\n");
-                let continuation_html = render_footnote_continuation(&continuation_content);
+                let continuation_html = render_footnote_continuation(&continuation_content, hardbreaks);
                 result_lines.push(format!(
                     "<blockquote id=\"fn_{}\"><sup>{}</sup>. {}{}\n{}</blockquote>",
                     number, number, first_line_content, return_link, continuation_html
@@ -373,7 +386,7 @@ fn parse_footnote_def_start(line: &str) -> Option<(&str, &str)> {
 
 
 /// Render footnote continuation content (lists, paragraphs after first line)
-fn render_footnote_continuation(content: &str) -> String {
+fn render_footnote_continuation(content: &str, hardbreaks: bool) -> String {
     // Find minimum indentation (excluding empty lines) to preserve relative indentation
     let min_indent = content
         .lines()
@@ -400,8 +413,21 @@ fn render_footnote_continuation(content: &str) -> String {
     options.insert(Options::ENABLE_STRIKETHROUGH);
 
     let parser = Parser::new_ext(&dedented, options);
+
+    // Apply hardbreaks conversion if enabled
+    let events: Vec<Event> = parser.map(|event| {
+        if hardbreaks {
+            match event {
+                Event::SoftBreak => Event::HardBreak,
+                _ => event,
+            }
+        } else {
+            event
+        }
+    }).collect();
+
     let mut html = String::new();
-    html::push_html(&mut html, parser);
+    html::push_html(&mut html, events.into_iter());
 
     html.trim().to_string()
 }
@@ -982,7 +1008,7 @@ fn test_footnote_in_table() {
 #[test]
 fn test_footnote_with_list() {
     let content = "- データソース項目の値\n- 上記以外の場合";
-    let html = render_footnote_continuation(content);
+    let html = render_footnote_continuation(content, false);
     println!("Footnote continuation HTML: {}", html);
     assert!(html.contains("<li>") && html.contains("<ul>"), "Should contain list: {}", html);
 }

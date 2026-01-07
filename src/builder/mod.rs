@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-pub use renderer::{render_markdown, render_markdown_with_path, extract_headings, TocItem};
+pub use renderer::{render_markdown, render_markdown_with_path, render_markdown_with_hardbreaks, extract_headings, TocItem};
 pub use template::Templates;
 
 /// Search index entry
@@ -117,7 +117,7 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_sea
         let front_matter = parsed.front_matter;
         // Expand variables before rendering
         let content = expand_variables(&parsed.content, config);
-        let html_content = render_markdown(&content);
+        let html_content = render_markdown_with_hardbreaks(&content, config.hardbreaks);
         // Apply glossary terms
         let html_content = apply_glossary(&html_content, &glossary);
         let toc_items = extract_headings(&content);
@@ -239,7 +239,7 @@ fn build_chapters(
                     let front_matter = parsed.front_matter;
                     // Expand variables before rendering
                     let content = expand_variables(&parsed.content, config);
-                    let html_content = render_markdown_with_path(&content, Some(md_path));
+                    let html_content = render_markdown_with_path(&content, Some(md_path), config.hardbreaks);
                     // Apply glossary terms
                     let html_content = apply_glossary(&html_content, glossary);
                     let toc_items = extract_headings(&content);

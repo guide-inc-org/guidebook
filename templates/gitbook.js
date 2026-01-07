@@ -366,6 +366,11 @@
                     mermaid.init(undefined, '.markdown-section .mermaid');
                 }
 
+                // Re-apply font settings (theme styles for tables/headings)
+                if (window.guidebookFontsettings && window.guidebookFontsettings.reapply) {
+                    window.guidebookFontsettings.reapply();
+                }
+
                 // Update TOC from new page
                 var newToc = doc.querySelector('.page-toc');
                 var currentToc = document.querySelector('.page-toc');

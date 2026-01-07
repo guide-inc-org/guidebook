@@ -35,6 +35,11 @@ pub struct BookConfig {
     /// User-defined variables that can be used in Markdown with {{ book.xxx }} syntax
     #[serde(default)]
     pub variables: HashMap<String, serde_json::Value>,
+
+    /// When true, treat single newlines as hard breaks (<br>)
+    /// This makes trailing spaces unnecessary for line breaks
+    #[serde(default)]
+    pub hardbreaks: bool,
 }
 
 impl BookConfig {
