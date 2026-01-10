@@ -110,8 +110,8 @@ fn calculate_indent(line: &str) -> usize {
             _ => break,
         }
     }
-    // Tab = 1 level, 4 spaces = 1 level (matching HonKit behavior)
-    tabs + (spaces / 4)
+    // Tab = 1 level, 2 spaces = 1 level (matching standard Markdown/HonKit behavior)
+    tabs + (spaces / 2)
 }
 
 fn push_item(stack: &mut Vec<(usize, Vec<SummaryItem>)>, item: SummaryItem) {
