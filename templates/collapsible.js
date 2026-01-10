@@ -76,6 +76,9 @@
     // Restore state on page load
     restoreExpandedState();
 
+    // Toggle icon click area width (includes padding-left where arrow icon is displayed)
+    var TOGGLE_ICON_WIDTH = 70;
+
     // Use event delegation so it works after SPA navigation
     sidebar.addEventListener('click', function(e) {
         var link = e.target.closest('a');
@@ -100,12 +103,22 @@
             return;
         }
 
-        // If clicked on link with children, toggle expand/collapse
+        // If clicked on link with children - check click position
+        // Left side (arrow icon area) = toggle, Right side (text) = navigate
         if (link) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            directChapter.classList.toggle('expanded');
-            saveCurrentState();
+            var linkRect = link.getBoundingClientRect();
+            var clickX = e.clientX - linkRect.left;
+
+            // If clicked on the left arrow area, toggle expand/collapse
+            if (clickX < TOGGLE_ICON_WIDTH) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                directChapter.classList.toggle('expanded');
+                saveCurrentState();
+                return;
+            }
+            // Otherwise, allow normal link navigation (do nothing, let browser handle)
+            return;
         }
     });
 })();

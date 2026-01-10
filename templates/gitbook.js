@@ -250,9 +250,9 @@
             var link = e.target.closest('a');
             if (!link) return;
 
-            // Skip SPA navigation for expandable items with children (handled by collapsible.js)
-            var directChapter = link.closest('.chapter');
-            if (directChapter && directChapter.classList.contains('expandable') && directChapter.querySelector(':scope > .articles')) return;
+            // Note: expandable items with children are handled by collapsible.js
+            // - Arrow click: collapsible.js calls stopImmediatePropagation(), so this handler won't run
+            // - Text click: collapsible.js returns without stopping, so this handler runs for SPA navigation
 
             var href = link.getAttribute('href');
             if (!href || href.startsWith('#') || href.startsWith('http')) return;
