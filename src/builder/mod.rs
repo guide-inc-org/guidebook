@@ -225,13 +225,46 @@ fn build_chapters(
     summary: &Summary,
     glossary: &Glossary,
 ) -> Result<usize> {
+    let mut built_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    build_chapters_inner(source, output, items, config, templates, summary, glossary, &mut built_files)
+}
+
+fn build_chapters_inner(
+    source: &Path,
+    output: &Path,
+    items: &[SummaryItem],
+    config: &BookConfig,
+    templates: &Templates,
+    summary: &Summary,
+    glossary: &Glossary,
+    built_files: &mut std::collections::HashSet<String>,
+) -> Result<usize> {
     let mut count = 0;
 
     for item in items {
         if let SummaryItem::Link { title, path, children } = item {
             if let Some(md_path) = path {
-                let src_file = source.join(md_path);
+                // Extract base file path (remove anchor #xxx if present)
+                let base_path = if let Some(hash_pos) = md_path.find('#') {
+                    &md_path[..hash_pos]
+                } else {
+                    md_path.as_str()
+                };
+
+                // Skip if already built (avoid duplicate builds for anchor-only references)
+                if base_path.is_empty() || built_files.contains(base_path) {
+                    // Still need to process children
+                    if !children.is_empty() {
+                        count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files)?;
+                    }
+                    continue;
+                }
+
+                let src_file = source.join(base_path);
                 if src_file.exists() {
+                    // Mark as built before processing
+                    built_files.insert(base_path.to_string());
+
                     // Read and render markdown
                     let raw_content = fs::read_to_string(&src_file)?;
                     // Parse front matter
@@ -239,13 +272,13 @@ fn build_chapters(
                     let front_matter = parsed.front_matter;
                     // Expand variables before rendering
                     let content = expand_variables(&parsed.content, config);
-                    let html_content = render_markdown_with_path(&content, Some(md_path), config.hardbreaks);
+                    let html_content = render_markdown_with_path(&content, Some(base_path), config.hardbreaks);
                     // Apply glossary terms
                     let html_content = apply_glossary(&html_content, glossary);
                     let toc_items = extract_headings(&content);
 
-                    // Generate output path
-                    let html_path = md_path.replace(".md", ".html");
+                    // Generate output path (use base_path without anchor)
+                    let html_path = base_path.replace(".md", ".html");
                     let dest_file = output.join(&html_path);
 
                     // Calculate relative path to root
@@ -280,13 +313,13 @@ fn build_chapters(
                     fs::write(&dest_file, page_html)?;
                     count += 1;
                 } else {
-                    println!("  Warning: {} not found", md_path);
+                    println!("  Warning: {} not found", base_path);
                 }
             }
 
             // Build children recursively
             if !children.is_empty() {
-                count += build_chapters(source, output, children, config, templates, summary, glossary)?;
+                count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files)?;
             }
         }
     }
