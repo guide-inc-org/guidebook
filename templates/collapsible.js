@@ -76,9 +76,6 @@
     // Restore state on page load
     restoreExpandedState();
 
-    // Toggle icon click area width (includes padding-left where arrow icon is displayed)
-    var TOGGLE_ICON_WIDTH = 70;
-
     // Use event delegation so it works after SPA navigation
     sidebar.addEventListener('click', function(e) {
         var link = e.target.closest('a');
@@ -109,8 +106,13 @@
             var linkRect = link.getBoundingClientRect();
             var clickX = e.clientX - linkRect.left;
 
+            // Get actual padding-left of the link (where arrow icon is)
+            var paddingLeft = parseInt(window.getComputedStyle(link).paddingLeft, 10) || 50;
+            // Add small margin for easier clicking
+            var toggleWidth = paddingLeft + 10;
+
             // If clicked on the left arrow area, toggle expand/collapse
-            if (clickX < TOGGLE_ICON_WIDTH) {
+            if (clickX < toggleWidth) {
                 e.preventDefault();
                 e.stopImmediatePropagation();
                 directChapter.classList.toggle('expanded');
