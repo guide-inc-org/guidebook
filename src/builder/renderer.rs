@@ -212,7 +212,7 @@ fn heading_level_to_num(level: HeadingLevel) -> u8 {
     }
 }
 
-/// Generate a URL-safe slug from text
+/// Generate a URL-safe slug from text (matching github-slugger / HonKit behavior)
 fn slugify(text: &str) -> String {
     text.to_lowercase()
         .chars()
@@ -221,14 +221,12 @@ fn slugify(text: &str) -> String {
                 Some(c)
             } else if c.is_whitespace() {
                 Some('-')
-            } else if c == '.' {
-                // Remove periods (to match GitBook behavior)
-                None
             } else if c > '\x7F' {
                 // Keep non-ASCII characters (Japanese, etc.)
                 Some(c)
             } else {
-                Some('-')
+                // Remove other special characters (/, ., etc.) to match github-slugger
+                None
             }
         })
         .collect::<String>()
@@ -1099,6 +1097,18 @@ sequenceDiagram
         assert!(output.contains("    - Second line"), "Second line should be indented: {}", output);
         assert!(output.contains("    - Third line"), "Third line should be indented: {}", output);
         assert!(!output.contains("    [^2]"), "New footnote should not be indented: {}", output);
+    }
+
+    #[test]
+    fn test_slugify_matches_github_slugger() {
+        // Test that slugify matches github-slugger / HonKit behavior
+        // Special characters like / should be removed, not converted to hyphens
+        assert_eq!(slugify("/auth/verification-email/resend"), "authverification-emailresend");
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("A.B.C"), "abc");  // Periods removed
+        assert_eq!(slugify("日本語テスト"), "日本語テスト");  // Japanese preserved
+        assert_eq!(slugify("test_underscore"), "test_underscore");  // Underscores preserved
+        assert_eq!(slugify("a--b"), "a-b");  // Multiple hyphens collapsed
     }
 }
 
