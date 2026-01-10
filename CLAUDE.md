@@ -26,29 +26,44 @@ cargo test
 
 ## Release Procedure
 
-1. Update version in `Cargo.toml`
-2. Run `cargo check` to update `Cargo.lock`
-3. Commit & push (includes both Cargo.toml and Cargo.lock)
-4. Create and push tag (binary is auto-generated to GitHub Releases)
-5. Publish to crates.io
+### Quick Release (GitHub Releases only)
+
+For most releases, just push a tag. GitHub Actions will automatically build binaries for all platforms and create a GitHub Release.
 
 ```bash
-# 1. Update version in Cargo.toml, then:
+# 1. Update version in Cargo.toml
+# 2. Update Cargo.lock
 cargo check
 
-# 2. Commit everything (Cargo.toml + Cargo.lock)
-git add -A && git commit -m "Bump version to vX.Y.Z"
+# 3. Commit and push
+git add Cargo.toml Cargo.lock
+git commit -m "chore: bump version to X.Y.Z"
 git push origin main
 
-# 3. Create & push tag (triggers release workflow)
+# 4. Create and push tag (triggers GitHub Actions)
 git tag vX.Y.Z
 git push origin vX.Y.Z
+```
 
-# 4. Publish to crates.io
+The release workflow will:
+- Build binaries for Linux, macOS (Intel + Apple Silicon), and Windows
+- Create a GitHub Release with all binaries attached
+- Guidebook Cloud will automatically pick up the new version on next build
+
+### Full Release (GitHub + crates.io)
+
+If you also want to publish to crates.io:
+
+```bash
+# After pushing the tag, publish to crates.io
 cargo publish
 ```
 
-**Important:** Always run `cargo check` after updating version to ensure `Cargo.lock` is updated before committing. This prevents having to make a separate commit for `Cargo.lock` after publishing.
+### Notes
+
+- Always run `cargo check` after updating version to ensure `Cargo.lock` is updated
+- Guidebook Cloud auto-updates: The builder checks GitHub Releases on each build and downloads the latest version if newer
+- No need to rebuild the Fly.io builder image when releasing new versions
 
 ## Directory Structure
 
