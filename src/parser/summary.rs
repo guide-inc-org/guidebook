@@ -5,6 +5,8 @@ use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct Summary {
+    /// Title from # heading in SUMMARY.md (kept for compatibility)
+    #[allow(dead_code)]
     pub title: Option<String>,
     pub items: Vec<SummaryItem>,
 }

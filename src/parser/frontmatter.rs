@@ -23,8 +23,9 @@ pub struct FrontMatter {
     #[serde(default)]
     pub description: Option<String>,
 
-    /// Additional custom fields can be added here
+    /// Additional custom fields (for extensibility)
     #[serde(flatten)]
+    #[allow(dead_code)]
     pub extra: std::collections::HashMap<String, serde_yaml::Value>,
 }
 

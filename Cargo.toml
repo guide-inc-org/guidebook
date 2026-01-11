@@ -1,6 +1,6 @@
 [package]
 name = "guidebook"
-version = "0.1.36"
+version = "0.1.37"
 edition = "2021"
 description = "HonKit/GitBook compatible static book generator"
 license = "MIT"
@@ -30,13 +30,9 @@ serde_yaml = "0.9"
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
 
 # File system utilities
 walkdir = "2"
-
-# Path handling
-pathdiff = "0.2"
 
 # Regex for pattern matching
 regex = "1"

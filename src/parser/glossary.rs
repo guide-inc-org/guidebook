@@ -3,13 +3,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-/// Glossary entry containing term and its definition
-#[derive(Debug, Clone)]
-pub struct GlossaryEntry {
-    pub term: String,
-    pub definition: String,
-}
-
 /// Glossary containing all terms and their definitions
 #[derive(Debug, Clone, Default)]
 pub struct Glossary {

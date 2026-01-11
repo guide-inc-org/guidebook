@@ -17,65 +17,6 @@ impl Templates {
         Ok(Self { tera })
     }
 
-    pub fn render_page(
-        &self,
-        title: &str,
-        content: &str,
-        root_path: &str,
-        config: &BookConfig,
-        summary: &Summary,
-        current_path: Option<&str>,
-        toc_items: &[TocItem],
-    ) -> Result<String> {
-        let mut context = Context::new();
-
-        context.insert("title", title);
-        context.insert("book_title", &config.title);
-        context.insert("content", content);
-        context.insert("root_path", root_path);
-
-        // Check plugin features
-        let collapsible = config.is_plugin_enabled("collapsible-chapters");
-        context.insert("collapsible", &collapsible);
-
-        // Generate sidebar HTML - links need root_path prefix
-        let sidebar = generate_sidebar(&summary.items, current_path, root_path, collapsible);
-        context.insert("sidebar", &sidebar);
-
-        // Generate prev/next navigation
-        let (prev_page, next_page) = get_prev_next_pages(&summary.items, current_path);
-        context.insert("prev_url", &prev_page.as_ref().map(|(url, _)| url.clone()));
-        context.insert("prev_title", &prev_page.map(|(_, title)| title));
-        context.insert("next_url", &next_page.as_ref().map(|(url, _)| url.clone()));
-        context.insert("next_title", &next_page.map(|(_, title)| title));
-
-        // Check plugin features
-        context.insert("back_to_top", &config.is_plugin_enabled("back-to-top-button"));
-        context.insert("mermaid", &config.is_plugin_enabled("mermaid-md-adoc"));
-        context.insert("fontsettings", &config.is_plugin_enabled("fontsettings"));
-
-        // Generate TOC HTML
-        let toc_html = generate_toc_html(toc_items);
-        context.insert("toc", &toc_html);
-        context.insert("has_toc", &!toc_items.is_empty());
-
-        // Custom styles
-        let has_custom_style = config.get_website_style().is_some();
-        context.insert("has_custom_style", &has_custom_style);
-
-        // Add book variables to context (accessible as {{ book.xxx }} in templates)
-        if !config.variables.is_empty() {
-            context.insert("book", &config.variables);
-        }
-
-        // No description by default
-        context.insert("description", &"");
-        context.insert("has_description", &false);
-
-        let html = self.tera.render("page.html", &context)?;
-        Ok(html)
-    }
-
     /// Render a page with front matter metadata support
     pub fn render_page_with_meta(
         &self,
@@ -190,29 +131,6 @@ fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
     }
 
     pages
-}
-
-/// Check if any descendant of items contains the current path
-fn contains_current_path(items: &[SummaryItem], current_path: Option<&str>) -> bool {
-    let current = match current_path {
-        Some(p) => p,
-        None => return false,
-    };
-
-    for item in items {
-        if let SummaryItem::Link { path, children, .. } = item {
-            if let Some(md_path) = path {
-                let html_path = md_path.replace(".md", ".html");
-                if html_path == current {
-                    return true;
-                }
-            }
-            if contains_current_path(children, current_path) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str, collapsible: bool) -> String {

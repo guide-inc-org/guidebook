@@ -18,19 +18,10 @@ pub struct BookConfig {
     pub title: String,
 
     #[serde(default)]
-    pub description: String,
-
-    #[serde(default)]
-    pub author: String,
-
-    #[serde(default)]
     pub plugins: Vec<String>,
 
     #[serde(default)]
     pub styles: HashMap<String, String>,
-
-    #[serde(default, rename = "pluginsConfig")]
-    pub plugins_config: HashMap<String, serde_json::Value>,
 
     /// User-defined variables that can be used in Markdown with {{ book.xxx }} syntax
     #[serde(default)]
@@ -85,11 +76,6 @@ impl BookConfig {
         DEFAULT_ENABLED_PLUGINS.contains(&name)
     }
 
-    /// Check if a plugin is explicitly disabled (prefixed with -)
-    pub fn is_plugin_disabled(&self, name: &str) -> bool {
-        self.plugins.iter().any(|p| *p == format!("-{}", name))
-    }
-
     /// Get custom CSS path for website
     pub fn get_website_style(&self) -> Option<&String> {
         self.styles.get("website")
@@ -113,7 +99,7 @@ mod tests {
         let config: BookConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.title, "Test Book");
         assert!(config.is_plugin_enabled("back-to-top-button"));
-        assert!(config.is_plugin_disabled("search"));
+        assert!(!config.is_plugin_enabled("search")); // Explicitly disabled with "-search"
         assert_eq!(config.get_website_style(), Some(&"styles/website.css".to_string()));
     }
 
