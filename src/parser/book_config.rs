@@ -74,7 +74,9 @@ impl BookConfig {
         }
 
         let content = fs::read_to_string(&config_path)?;
-        let config: BookConfig = serde_json::from_str(&content)?;
+        // Parse via Value first to allow duplicate keys (last value wins)
+        let value: serde_json::Value = serde_json::from_str(&content)?;
+        let config: BookConfig = serde_json::from_value(value)?;
         Ok(config)
     }
 
@@ -213,5 +215,18 @@ mod tests {
         let json = r#"{"title": "Test"}"#;
         let config: BookConfig = serde_json::from_str(json).unwrap();
         assert!(!config.fetch_remote_images);
+    }
+
+    #[test]
+    fn test_duplicate_keys_allowed() {
+        // Duplicate keys should be allowed (last value wins)
+        let json = r#"{
+            "title": "Test",
+            "hardbreaks": false,
+            "hardbreaks": true
+        }"#;
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let config: BookConfig = serde_json::from_value(value).unwrap();
+        assert!(config.hardbreaks); // Last value wins
     }
 }
