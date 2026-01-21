@@ -51,6 +51,12 @@ pub struct BookConfig {
     /// Images are cached in _remote_images/ directory with CRC32-based filenames
     #[serde(default, rename = "fetchRemoteImages")]
     pub fetch_remote_images: bool,
+
+    /// OpenAPI/Swagger configuration
+    /// Path to the swagger.json or openapi.json file (relative to book root)
+    /// When set, generates an API documentation page using Swagger UI
+    #[serde(default)]
+    pub openapi: Option<String>,
 }
 
 impl BookConfig {

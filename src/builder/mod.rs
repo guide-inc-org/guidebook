@@ -1,5 +1,6 @@
 mod images;
 mod nunjucks;
+mod openapi;
 mod renderer;
 pub mod svg;
 mod template;
@@ -81,6 +82,11 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
 
         build_multi_lang_book(&source, output, &config, &languages, skip_search_index)?
     };
+
+    // Generate Swagger UI if openapi is configured (at root level)
+    if let Some(openapi_path) = &config.openapi {
+        openapi::generate_swagger_ui(&source, output, openapi_path)?;
+    }
 
     let elapsed = start_time.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
