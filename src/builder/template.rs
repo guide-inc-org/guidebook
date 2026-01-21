@@ -250,7 +250,7 @@ fn generate_toc_html(items: &[TocItem]) -> String {
 }
 
 const PAGE_TEMPLATE: &str = r##"<!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" data-guidebook>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">

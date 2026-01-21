@@ -504,7 +504,7 @@ fn generate_lang_index(output: &Path, languages: &[Language], config: &BookConfi
 
     let html = format!(
         r#"<!DOCTYPE HTML>
-<html lang="" >
+<html lang="" data-guidebook>
     <head>
         <meta charset="UTF-8">
         <title>Choose a language · {}</title>
