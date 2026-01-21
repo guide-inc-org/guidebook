@@ -338,7 +338,17 @@
                 // Update content
                 var newContent = doc.querySelector('.markdown-section');
                 var currentContent = document.querySelector('.markdown-section');
-                if (newContent && currentContent) {
+
+                // If the new page doesn't have .markdown-section (e.g., Swagger UI, external page),
+                // do a full page navigation instead of SPA update
+                if (!newContent) {
+                    isNavigating = false;
+                    document.body.classList.remove('loading');
+                    window.location.href = absoluteUrl;
+                    return;
+                }
+
+                if (currentContent) {
                     currentContent.innerHTML = newContent.innerHTML;
                 }
 
