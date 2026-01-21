@@ -202,8 +202,8 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     // Fix relative links: convert .md to .html
     html_output = fix_relative_links(&html_output);
 
-    // Remove leading slashes from internal links
-    html_output = remove_leading_slash_from_links(&html_output);
+    // Note: Root-relative links (starting with /) are handled in convert_relative_links_to_absolute()
+    // which has access to the current file path and can calculate the correct relative path
 
     // Auto-link URLs that are not already linked
     html_output = autolink_urls(&html_output);
@@ -1159,9 +1159,11 @@ fn convert_remaining_markdown_images(html: &str) -> String {
 }
 
 /// Convert internal links to proper relative paths from current file
-/// Links like "Customer/AssetStatus/PortfolioStock.html" (relative from book root)
-/// need to be converted to "../../Customer/AssetStatus/PortfolioStock.html"
-/// when rendered from a file at "Customer/AssetStatus/PortfolioTop.html"
+///
+/// Handles two cases:
+/// 1. Root-relative links (starting with /): e.g., "/api-docs/" → "../../api-docs/" (at depth 2)
+/// 2. Root-relative links without slash: e.g., "Customer/AssetStatus/File.html" → "../../Customer/AssetStatus/File.html"
+///
 /// current_path: e.g., "Customer/AssetStatus/PortfolioTop.md"
 fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String {
     let result = html.to_string();
@@ -1200,8 +1202,26 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
             let url_end = url_start + url_end_offset;
             let url = &result[url_start..url_end];
 
-            // Check if this is an internal link that needs conversion
-            // Skip: external links (http/https), anchor-only (#), already relative (../ or ./), absolute (/), data URIs
+            // Check if this is a root-relative link (starts with /)
+            // Convert "/api-docs/" to "../../api-docs/" based on depth
+            let is_root_relative = url.starts_with('/')
+                && !url.starts_with("//")  // Skip protocol-relative URLs
+                && !url.to_lowercase().starts_with("/http://")
+                && !url.to_lowercase().starts_with("/https://");
+
+            if is_root_relative {
+                // Copy everything up to the URL
+                new_result.push_str(&result[last_end..url_start]);
+                // Add the root prefix + URL without leading slash
+                new_result.push_str(&root_prefix);
+                new_result.push_str(&url[1..]); // Skip the leading /
+                last_end = url_end;
+                search_start = url_end + 1;
+                continue;
+            }
+
+            // Check if this is an internal link that needs conversion (no leading /)
+            // Skip: external links (http/https), anchor-only (#), already relative (../ or ./), data URIs
             let needs_conversion = !url.is_empty()
                 && !url.starts_with("http://")
                 && !url.starts_with("https://")

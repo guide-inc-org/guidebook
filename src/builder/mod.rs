@@ -72,7 +72,7 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
     let stats = if languages.is_empty() {
         // Single language book
         println!("Building single-language book...");
-        build_single_book(&source, output, &config, skip_search_index)?
+        build_single_book(&source, output, &config, skip_search_index, None)?
     } else {
         // Multi-language book
         println!("Building multi-language book with {} languages:", languages.len());
@@ -98,7 +98,7 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
     Ok(())
 }
 
-fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_search_index: bool) -> Result<BuildStats> {
+fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_search_index: bool, lang_prefix: Option<&str>) -> Result<BuildStats> {
     let summary = Summary::parse(source)?;
     let templates = Templates::new(config)?;
     let mut stats = BuildStats::default();
@@ -129,7 +129,7 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_sea
     }
 
     // Build each chapter
-    stats.pages += build_chapters(source, output, &summary.items, config, &templates, &summary, &glossary)?;
+    stats.pages += build_chapters(source, output, &summary.items, config, &templates, &summary, &glossary, lang_prefix)?;
 
     // Generate index.html from README.md if exists
     let readme_path = source.join("README.md");
@@ -242,7 +242,7 @@ fn build_multi_lang_book(
             config.clone()
         };
 
-        let lang_stats = build_single_book(&lang_source, &lang_output, &lang_config, skip_search_index)?;
+        let lang_stats = build_single_book(&lang_source, &lang_output, &lang_config, skip_search_index, Some(&lang.code))?;
         stats.pages += lang_stats.pages;
         stats.assets += lang_stats.assets;
     }
@@ -264,9 +264,10 @@ fn build_chapters(
     templates: &Templates,
     summary: &Summary,
     glossary: &Glossary,
+    lang_prefix: Option<&str>,
 ) -> Result<usize> {
     let mut built_files: std::collections::HashSet<String> = std::collections::HashSet::new();
-    build_chapters_inner(source, output, items, config, templates, summary, glossary, &mut built_files)
+    build_chapters_inner(source, output, items, config, templates, summary, glossary, &mut built_files, lang_prefix)
 }
 
 fn build_chapters_inner(
@@ -278,6 +279,7 @@ fn build_chapters_inner(
     summary: &Summary,
     glossary: &Glossary,
     built_files: &mut std::collections::HashSet<String>,
+    lang_prefix: Option<&str>,
 ) -> Result<usize> {
     let mut count = 0;
 
@@ -296,7 +298,7 @@ fn build_chapters_inner(
                 if base_path.is_empty() || built_files.contains(base_path) {
                     // Still need to process children
                     if !children.is_empty() {
-                        count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files)?;
+                        count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files, lang_prefix)?;
                     }
                     continue;
                 }
@@ -315,10 +317,17 @@ fn build_chapters_inner(
                     // Check if this is an AsciiDoc file
                     let is_asciidoc = is_asciidoc_file(&src_file);
 
+                    // For multi-language books, prepend language prefix to calculate correct relative paths
+                    // e.g., "Customer/File.md" becomes "vn/Customer/File.md" for depth calculation
+                    let full_path = match lang_prefix {
+                        Some(prefix) => format!("{}/{}", prefix, base_path),
+                        None => base_path.to_string(),
+                    };
+
                     // Render content based on file type
                     let (html_content, toc_items) = if is_asciidoc {
                         // AsciiDoc rendering
-                        let html = render_asciidoc_with_path(&parsed.content, Some(base_path));
+                        let html = render_asciidoc_with_path(&parsed.content, Some(&full_path));
                         let toc = extract_headings_from_asciidoc(&parsed.content);
                         (html, toc)
                     } else {
@@ -331,7 +340,7 @@ fn build_chapters_inner(
                                 eprintln!("  Warning: Template error in {}: {}", base_path, e);
                                 imported_content.clone()
                             });
-                        let html = render_markdown_with_path(&content, Some(base_path), config.hardbreaks);
+                        let html = render_markdown_with_path(&content, Some(&full_path), config.hardbreaks);
                         let toc = extract_headings(&content);
                         (html, toc)
                     };
@@ -388,7 +397,7 @@ fn build_chapters_inner(
 
             // Build children recursively
             if !children.is_empty() {
-                count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files)?;
+                count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files, lang_prefix)?;
             }
         }
     }
@@ -449,6 +458,10 @@ fn copy_dir_recursive_count(src: &Path, dest: &Path) -> Result<usize> {
         } else {
             if let Some(parent) = dest_path.parent() {
                 fs::create_dir_all(parent)?;
+            }
+            // Skip if destination already exists (might be from a previous build or another language)
+            if dest_path.exists() || dest_path.symlink_metadata().is_ok() {
+                continue;
             }
             // Use symlinks on Unix for faster builds (no actual file copy)
             // Falls back to copy on Windows
