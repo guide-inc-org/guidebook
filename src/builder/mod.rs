@@ -84,8 +84,8 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
     };
 
     // Generate Swagger UI if openapi is configured (at root level)
-    if let Some(openapi_path) = &config.openapi {
-        openapi::generate_swagger_ui(&source, output, openapi_path)?;
+    if let Some(openapi_config) = &config.openapi {
+        openapi::generate_swagger_ui(&source, output, openapi_config)?;
     }
 
     let elapsed = start_time.elapsed();

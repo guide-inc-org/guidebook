@@ -4,7 +4,7 @@ pub mod glossary;
 pub mod langs;
 pub mod summary;
 
-pub use book_config::BookConfig;
+pub use book_config::{BookConfig, OpenApiConfig};
 pub use frontmatter::{parse_front_matter, FrontMatter};
 pub use glossary::{apply_glossary, Glossary};
 pub use langs::Language;

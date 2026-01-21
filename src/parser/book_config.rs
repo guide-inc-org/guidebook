@@ -53,10 +53,22 @@ pub struct BookConfig {
     pub fetch_remote_images: bool,
 
     /// OpenAPI/Swagger configuration
-    /// Path to the swagger.json or openapi.json file (relative to book root)
-    /// When set, generates an API documentation page using Swagger UI
+    /// Can be a single path string or a map of output_dir -> swagger_file_path
+    /// Examples:
+    ///   "openapi": "swagger.json"
+    ///   "openapi": { "api-docs": "swagger/v1.json", "api-docs-v2": "swagger/v2.json" }
     #[serde(default)]
-    pub openapi: Option<String>,
+    pub openapi: Option<OpenApiConfig>,
+}
+
+/// OpenAPI configuration - supports single file or multiple files
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OpenApiConfig {
+    /// Single swagger file path (generates api-docs/ by default)
+    Single(String),
+    /// Map of output directory name -> swagger file path
+    Multiple(HashMap<String, String>),
 }
 
 impl BookConfig {

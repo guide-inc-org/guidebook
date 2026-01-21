@@ -1,7 +1,8 @@
 //! OpenAPI/Swagger UI generation module
 //!
-//! Generates a Swagger UI page for API documentation when `openapi` is configured in book.json
+//! Generates Swagger UI pages for API documentation when `openapi` is configured in book.json
 
+use crate::parser::OpenApiConfig;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
@@ -9,12 +10,35 @@ use std::path::Path;
 /// Swagger UI version to use from CDN
 const SWAGGER_UI_VERSION: &str = "5.11.0";
 
-/// Generate Swagger UI page for OpenAPI documentation
-pub fn generate_swagger_ui(source: &Path, output: &Path, openapi_path: &str) -> Result<()> {
+/// Generate Swagger UI pages based on OpenAPI configuration
+pub fn generate_swagger_ui(source: &Path, output: &Path, config: &OpenApiConfig) -> Result<()> {
     println!("Generating Swagger UI...");
 
-    // Create api-docs directory
-    let api_docs_dir = output.join("api-docs");
+    match config {
+        OpenApiConfig::Single(path) => {
+            // Single file -> api-docs/
+            generate_single_swagger_ui(source, output, "api-docs", path)?;
+        }
+        OpenApiConfig::Multiple(map) => {
+            // Multiple files -> each output directory
+            for (output_dir, swagger_path) in map {
+                generate_single_swagger_ui(source, output, output_dir, swagger_path)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate a single Swagger UI page
+fn generate_single_swagger_ui(
+    source: &Path,
+    output: &Path,
+    output_dir: &str,
+    openapi_path: &str,
+) -> Result<()> {
+    // Create output directory
+    let api_docs_dir = output.join(output_dir);
     fs::create_dir_all(&api_docs_dir)?;
 
     // Copy swagger.json to output
@@ -32,15 +56,15 @@ pub fn generate_swagger_ui(source: &Path, output: &Path, openapi_path: &str) -> 
 
     let dest_swagger = api_docs_dir.join(swagger_filename);
     fs::copy(&src_swagger, &dest_swagger)
-        .with_context(|| format!("Failed to copy {} to api-docs/", openapi_path))?;
+        .with_context(|| format!("Failed to copy {} to {}/", openapi_path, output_dir))?;
 
-    println!("  Copied {} to api-docs/{}", openapi_path, swagger_filename);
+    println!("  Copied {} to {}/{}", openapi_path, output_dir, swagger_filename);
 
     // Generate index.html with Swagger UI
     let html = generate_swagger_html(swagger_filename);
     fs::write(api_docs_dir.join("index.html"), html)?;
 
-    println!("  Generated api-docs/index.html");
+    println!("  Generated {}/index.html", output_dir);
 
     Ok(())
 }
