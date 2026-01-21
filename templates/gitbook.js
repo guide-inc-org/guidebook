@@ -261,10 +261,16 @@
             }
             link.setAttribute('href', absoluteUrl);
 
-            // For links that don't end in .html (external pages like Swagger UI), open in new tab
-            if (!absoluteUrl.endsWith('.html') && !absoluteUrl.includes('.html#')) {
+            // Determine if link should open in new tab
+            var isSameOrigin = absoluteUrl.startsWith(window.location.origin);
+            if (!isSameOrigin) {
+                // Different domain - always open in new tab
+                link.setAttribute('target', '_blank');
+            } else if (!absoluteUrl.endsWith('.html') && !absoluteUrl.includes('.html#')) {
+                // Same domain but not .html - open in new tab (e.g., Swagger UI at /api-docs/)
                 link.setAttribute('target', '_blank');
             }
+            // Same domain + .html - no target="_blank", SPA navigation will handle
         });
     }
 
