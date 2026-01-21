@@ -242,14 +242,11 @@
     // Prevent rapid navigation
     var isNavigating = false;
 
-    // Convert sidebar hrefs to absolute URLs on initial load
-    // This ensures right-click > "Open in new tab" works correctly after SPA navigation
-    // Also set target="_blank" for external pages (non-.html links like Swagger UI)
-    function normalizeSidebarHrefs() {
-        var sidebar = document.querySelector('.book-summary');
-        if (!sidebar) return;
+    // Convert hrefs to absolute URLs and set target="_blank" for external pages
+    function normalizeLinks(container) {
+        if (!container) return;
 
-        sidebar.querySelectorAll('a[href]').forEach(function(link) {
+        container.querySelectorAll('a[href]').forEach(function(link) {
             var href = link.getAttribute('href');
             if (!href || href.startsWith('#')) return;
 
@@ -269,6 +266,19 @@
                 link.setAttribute('target', '_blank');
             }
         });
+    }
+
+    // Convert sidebar hrefs to absolute URLs on initial load
+    // This ensures right-click > "Open in new tab" works correctly after SPA navigation
+    // Also set target="_blank" for external pages (non-.html links like Swagger UI)
+    function normalizeSidebarHrefs() {
+        normalizeLinks(document.querySelector('.book-summary'));
+    }
+
+    // Normalize links in main content area
+    // Called on page load and after SPA navigation
+    function normalizeContentLinks() {
+        normalizeLinks(document.querySelector('.markdown-section'));
     }
 
     function setupSpaNavigation() {
@@ -493,6 +503,9 @@
                     setupPageNavigation();
                 }
 
+                // Normalize links in updated content (set target="_blank" for external pages)
+                normalizeContentLinks();
+
                 // Reset navigation state
                 isNavigating = false;
                 document.body.classList.remove('loading');
@@ -512,6 +525,7 @@
 
     setupSpaNavigation();
     setupPageNavigation();
+    normalizeContentLinks();
 
     // Handle initial page load with hash anchor
     function scrollToHashOnLoad() {
