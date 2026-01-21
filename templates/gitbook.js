@@ -244,17 +244,30 @@
 
     // Convert sidebar hrefs to absolute URLs on initial load
     // This ensures right-click > "Open in new tab" works correctly after SPA navigation
+    // Also set target="_blank" for external pages (non-.html links like Swagger UI)
     function normalizeSidebarHrefs() {
         var sidebar = document.querySelector('.book-summary');
         if (!sidebar) return;
 
         sidebar.querySelectorAll('a[href]').forEach(function(link) {
             var href = link.getAttribute('href');
-            if (!href || href.startsWith('#') || href.startsWith('http') || href.startsWith('/')) return;
+            if (!href || href.startsWith('#')) return;
 
             // Convert relative href to absolute URL
-            var absoluteUrl = new URL(href, baseUrl).href;
+            var absoluteUrl;
+            if (href.startsWith('http')) {
+                absoluteUrl = href;
+            } else if (href.startsWith('/')) {
+                absoluteUrl = new URL(href, window.location.origin).href;
+            } else {
+                absoluteUrl = new URL(href, baseUrl).href;
+            }
             link.setAttribute('href', absoluteUrl);
+
+            // For links that don't end in .html (external pages like Swagger UI), open in new tab
+            if (!absoluteUrl.endsWith('.html') && !absoluteUrl.includes('.html#')) {
+                link.setAttribute('target', '_blank');
+            }
         });
     }
 
@@ -281,8 +294,11 @@
                 return;
             }
 
-            // Skip external links
+            // Skip external links and links that open in new tab
             if (href.startsWith('http') && !href.startsWith(window.location.origin)) {
+                return;
+            }
+            if (link.getAttribute('target') === '_blank') {
                 return;
             }
 
@@ -340,11 +356,11 @@
                 var currentContent = document.querySelector('.markdown-section');
 
                 // If the new page doesn't have .markdown-section (e.g., Swagger UI, external page),
-                // do a full page navigation instead of SPA update
+                // open in a new tab so user can return to the documentation
                 if (!newContent) {
                     isNavigating = false;
                     document.body.classList.remove('loading');
-                    window.location.href = absoluteUrl;
+                    window.open(absoluteUrl, '_blank');
                     return;
                 }
 
