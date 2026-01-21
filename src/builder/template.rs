@@ -28,6 +28,7 @@ impl Templates {
         current_path: Option<&str>,
         toc_items: &[TocItem],
         front_matter: Option<&FrontMatter>,
+        lang_prefix: Option<&str>,
     ) -> Result<String> {
         let mut context = Context::new();
 
@@ -41,7 +42,7 @@ impl Templates {
         context.insert("collapsible", &collapsible);
 
         // Generate sidebar HTML - links need root_path prefix
-        let sidebar = generate_sidebar(&summary.items, current_path, root_path, collapsible);
+        let sidebar = generate_sidebar(&summary.items, current_path, root_path, collapsible, lang_prefix.is_some());
         context.insert("sidebar", &sidebar);
 
         // Generate prev/next navigation
@@ -139,12 +140,15 @@ fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
     pages
 }
 
-fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str, collapsible: bool) -> String {
+fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str, collapsible: bool, is_multi_lang: bool) -> String {
     let mut html = String::new();
 
     for item in items {
         match item {
             SummaryItem::Link { title, path, children } => {
+                // Check if this is a book-root-relative path (starts with /)
+                let is_book_root_relative = path.as_ref().map(|p| p.starts_with('/')).unwrap_or(false);
+
                 // Remove leading slash and convert extension to .html
                 let html_path = path.as_ref().map(|p| {
                     p.trim_start_matches('/')
@@ -171,9 +175,15 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
                 ));
 
                 if let Some(ref hp) = html_path {
+                    // For multi-language books, root-relative paths need an extra ../ to get to book root
+                    let href_prefix = if is_book_root_relative && is_multi_lang {
+                        format!("../{}", prefix)
+                    } else {
+                        prefix.to_string()
+                    };
                     html.push_str(&format!(
                         r#"<a href="{}{}">{}</a>"#,
-                        prefix, hp, html_escape(title)
+                        href_prefix, hp, html_escape(title)
                     ));
                 } else {
                     html.push_str(&format!(
@@ -184,7 +194,7 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
 
                 if has_children {
                     html.push_str("<ul class=\"articles\">");
-                    html.push_str(&generate_sidebar(children, current_path, prefix, collapsible));
+                    html.push_str(&generate_sidebar(children, current_path, prefix, collapsible, is_multi_lang));
                     html.push_str("</ul>");
                 }
 

@@ -163,6 +163,7 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_sea
             Some("index.html"),
             &toc_items,
             front_matter.as_ref(),
+            lang_prefix,
         )?;
         // Apply SVG processing if configured
         let page_html = apply_svg_processing(page_html, output, config)?;
@@ -379,6 +380,7 @@ fn build_chapters_inner(
                         Some(&html_path),
                         &toc_items,
                         front_matter.as_ref(),
+                        lang_prefix,
                     )?;
 
                     // Apply SVG processing if configured

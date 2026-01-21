@@ -146,8 +146,8 @@ pub fn parse_summary(content: &str) -> Result<Summary> {
                 let path = if path.is_empty() || path == "#" {
                     None
                 } else {
-                    // Normalize path: remove leading ./ and / if present (HonKit compatibility)
-                    Some(path.trim_start_matches("./").trim_start_matches('/').to_string())
+                    // Normalize path: remove leading ./ (but keep / for root-relative paths)
+                    Some(path.trim_start_matches("./").to_string())
                 };
                 current_link = Some((String::new(), path));
             }
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_parse_absolute_paths() {
-        // Test absolute paths (leading /) - HonKit compatibility
+        // Test absolute paths (leading /) - preserved for root-relative handling
         let content = r#"# Summary
 
 * [Relative](chapter1.md)
@@ -371,7 +371,7 @@ mod tests {
         let summary = parse_summary(content).unwrap();
         assert_eq!(summary.items.len(), 4);
 
-        // Verify paths are normalized (leading / and ./ removed)
+        // Verify paths are normalized (./ removed, but / preserved for root-relative paths)
         if let SummaryItem::Link { path, .. } = &summary.items[0] {
             assert_eq!(path.as_deref(), Some("chapter1.md"));
         }
@@ -379,10 +379,10 @@ mod tests {
             assert_eq!(path.as_deref(), Some("chapter2.md"), "./ should be removed");
         }
         if let SummaryItem::Link { path, .. } = &summary.items[2] {
-            assert_eq!(path.as_deref(), Some("chapter3.md"), "Leading / should be removed");
+            assert_eq!(path.as_deref(), Some("/chapter3.md"), "Leading / should be preserved for root-relative paths");
         }
         if let SummaryItem::Link { path, .. } = &summary.items[3] {
-            assert_eq!(path.as_deref(), Some("dir/chapter4.md"), "Leading / should be removed from nested path");
+            assert_eq!(path.as_deref(), Some("/dir/chapter4.md"), "Leading / should be preserved for root-relative paths");
         }
     }
 }
