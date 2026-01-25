@@ -1222,7 +1222,9 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
 
             // Check if this is an internal link that needs conversion (no leading /)
             // Skip: external links (http/https), anchor-only (#), already relative (../ or ./), data URIs
+            // Skip: same-directory links (no "/" in path) - these are already correct relative links
             let needs_conversion = !url.is_empty()
+                && url.contains('/')  // Only convert links with directory paths
                 && !url.starts_with("http://")
                 && !url.starts_with("https://")
                 && !url.starts_with('#')
