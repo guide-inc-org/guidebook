@@ -1662,3 +1662,15 @@ fn test_resolve_reference_links_full_style() {
     assert!(output.contains("の場合"),
         "Text after link should be preserved: {}", output);
 }
+
+#[test]
+fn test_multilang_relative_links() {
+    let md = "[Link](repositories/docs-path.md)";
+    let current_path = "getting-started.md";
+    let html = render_markdown_with_path(md, Some(current_path), false);
+    println!("Result HTML: {}", html);
+    
+    // With the fix, it should NOT include "../" even if it contains a slash, because depth is 0
+    assert!(!html.contains("../repositories/docs-path.html"), "Should not prepend ../ to relative links when depth is 0: {}", html);
+    assert!(html.contains("href=\"repositories/docs-path.html\""), "Should preserve relative link: {}", html);
+}

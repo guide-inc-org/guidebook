@@ -230,14 +230,14 @@
     });
 
     // SPA-like navigation for sidebar links
-    // Store base URL on initial page load (e.g., /jp/)
-    var baseUrl = (function() {
+    // Get base URL for resolving relative links (e.g., /jp/)
+    function getBaseUrl() {
         var base = document.querySelector('base');
         if (base && base.href) {
             return base.href;
         }
         return window.location.href.replace(/[^/]*$/, '');
-    })();
+    }
 
     // Prevent rapid navigation
     var isNavigating = false;
@@ -257,7 +257,7 @@
             } else if (href.startsWith('/')) {
                 absoluteUrl = new URL(href, window.location.origin).href;
             } else {
-                absoluteUrl = new URL(href, baseUrl).href;
+                absoluteUrl = new URL(href, getBaseUrl()).href;
             }
             link.setAttribute('href', absoluteUrl);
 
@@ -351,8 +351,7 @@
         // Add loading state
         document.body.classList.add('loading');
 
-        // Always resolve relative to the fixed base URL
-        var absoluteUrl = new URL(url, baseUrl).href;
+        var absoluteUrl = new URL(url, getBaseUrl()).href;
 
         // Extract hash from URL if present
         var hashIndex = url.indexOf('#');
