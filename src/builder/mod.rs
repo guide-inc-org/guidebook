@@ -318,10 +318,19 @@ fn build_chapters_inner(
                     // Check if this is an AsciiDoc file
                     let is_asciidoc = is_asciidoc_file(&src_file);
 
+                    // For multi-language books, prepend language prefix to calculate correct relative paths
+                    // e.g., "Customer/File.md" becomes "jp/Customer/File.md" for depth calculation
+                    // This is needed for root-relative links like "/api-docs/" to be converted to
+                    // the correct relative path (e.g., "../../../api-docs/" instead of "../../api-docs/")
+                    let full_path = match lang_prefix {
+                        Some(prefix) => format!("{}/{}", prefix, base_path),
+                        None => base_path.to_string(),
+                    };
+
                     // Render content based on file type
                     let (html_content, toc_items) = if is_asciidoc {
                         // AsciiDoc rendering
-                        let html = render_asciidoc_with_path(&parsed.content, Some(base_path));
+                        let html = render_asciidoc_with_path(&parsed.content, Some(&full_path));
                         let toc = extract_headings_from_asciidoc(&parsed.content);
                         (html, toc)
                     } else {
@@ -334,7 +343,7 @@ fn build_chapters_inner(
                                 eprintln!("  Warning: Template error in {}: {}", base_path, e);
                                 imported_content.clone()
                             });
-                        let html = render_markdown_with_path(&content, Some(base_path), config.hardbreaks);
+                        let html = render_markdown_with_path(&content, Some(&full_path), config.hardbreaks);
                         let toc = extract_headings(&content);
                         (html, toc)
                     };
