@@ -395,10 +395,11 @@
                 });
 
                 // Find and mark new active item
-                var newActiveHref = url.replace(/^\.\//, '').split('#')[0];
+                // Use absoluteUrl for matching since sidebar links are normalized to absolute URLs
+                var newActiveHref = absoluteUrl.split('#')[0];
                 document.querySelectorAll('.book-summary .chapter a').forEach(function(link) {
                     var href = link.getAttribute('href');
-                    if (href === newActiveHref || href === './' + newActiveHref) {
+                    if (href === newActiveHref) {
                         var chapter = link.closest('.chapter');
                         if (chapter) {
                             chapter.classList.add('active');
@@ -511,6 +512,14 @@
                 // Normalize links in updated content (set target="_blank" for external pages)
                 normalizeContentLinks();
 
+                // Scroll sidebar to show active item only for page navigation (prev/next buttons)
+                // Not for sidebar clicks - user already knows where they clicked
+                if (!clickedLink) {
+                    setTimeout(function() {
+                        scrollSidebarToActive();
+                    }, 100);
+                }
+
                 // Reset navigation state
                 isNavigating = false;
                 document.body.classList.remove('loading');
@@ -564,5 +573,45 @@
     if (typeof hljs !== 'undefined') {
         hljs.highlightAll();
     }
+
+    // Scroll sidebar to show active item centered
+    function scrollSidebarToActive() {
+        var sidebar = document.querySelector('.book-summary');
+        var activeItem = document.querySelector('.book-summary .chapter.active');
+
+        if (!sidebar || !activeItem) return;
+
+        // Get the active item's link element for more precise positioning
+        var activeLink = activeItem.querySelector('a') || activeItem;
+
+        // Calculate position to center the active item in the sidebar
+        var sidebarRect = sidebar.getBoundingClientRect();
+        var activeRect = activeLink.getBoundingClientRect();
+
+        // Calculate the offset needed to center the active item
+        var sidebarScrollTop = sidebar.scrollTop;
+        var activeOffsetTop = activeRect.top - sidebarRect.top + sidebarScrollTop;
+        var sidebarHeight = sidebar.clientHeight;
+        var activeHeight = activeRect.height;
+
+        // Scroll so that active item is centered (minus half sidebar height, plus half item height)
+        var targetScrollTop = activeOffsetTop - (sidebarHeight / 2) + (activeHeight / 2);
+
+        // Clamp to valid scroll range
+        var maxScroll = sidebar.scrollHeight - sidebarHeight;
+        targetScrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
+
+        sidebar.scrollTop = targetScrollTop;
+    }
+
+    // Scroll sidebar on initial page load
+    if (document.readyState === 'complete') {
+        scrollSidebarToActive();
+    } else {
+        window.addEventListener('load', scrollSidebarToActive);
+    }
+
+    // Expose for use after SPA navigation
+    window.scrollSidebarToActive = scrollSidebarToActive;
 
 })();

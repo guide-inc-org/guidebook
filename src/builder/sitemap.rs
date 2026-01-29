@@ -45,10 +45,16 @@ impl SitemapOptions {
 pub fn generate_sitemap_html(summary: &Summary, options: &SitemapOptions) -> String {
     let mut html = String::new();
 
-    html.push_str(&format!(
-        r#"<div class="sitemap" style="column-count: {};">"#,
-        options.columns
-    ));
+    // Only add inline style if columns is explicitly set to non-default value
+    // Default (3) uses CSS media queries for responsive behavior
+    if options.columns == 3 {
+        html.push_str(r#"<div class="sitemap">"#);
+    } else {
+        html.push_str(&format!(
+            r#"<div class="sitemap" style="column-count: {};">"#,
+            options.columns
+        ));
+    }
     html.push('\n');
 
     for item in &summary.items {
