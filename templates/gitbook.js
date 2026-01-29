@@ -320,7 +320,18 @@
 
             e.preventDefault();
             if (isNavigating) return;
-            loadPage(href, link);
+
+            // For search results, pass null to trigger sidebar scroll to active item
+            // Also hide search results after navigation
+            var isSearchResult = link.classList.contains('search-result-item');
+            if (isSearchResult) {
+                var searchResults = document.querySelector('.search-results');
+                if (searchResults) {
+                    searchResults.classList.remove('visible');
+                }
+            }
+
+            loadPage(href, isSearchResult ? null : link);
         });
     }
 
