@@ -600,7 +600,6 @@ body.loading .markdown-section {
 .page-toc {
     position: fixed;
     right: 20px;
-    top: 10px;
     width: 220px;
     max-height: calc(100vh - 120px);
     overflow-y: auto;
