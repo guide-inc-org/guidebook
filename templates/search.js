@@ -9,13 +9,18 @@
     var searchWrapper = document.querySelector('.search-wrapper');
     var rootPath = document.body.getAttribute('data-root-path') || '';
 
+    // Calculate absolute base URL at initialization time
+    // This ensures search result links work correctly even after SPA navigation
+    // changes window.location
+    var baseUrl = new URL(rootPath, window.location.href).href;
+
     if (!searchInput || !searchResults) return;
 
     // Load search index
     function loadSearchIndex() {
         if (searchIndex) return Promise.resolve(searchIndex);
 
-        var indexUrl = rootPath + 'search_index.json';
+        var indexUrl = baseUrl + 'search_index.json';
 
         return fetch(indexUrl)
             .then(function(response) {
@@ -86,7 +91,7 @@
             var highlightedTitle = highlightMatch(result.title, query);
             var highlightedSnippet = result.snippet ? highlightMatch(result.snippet, query) : '';
 
-            return '<a class="search-result-item" href="' + rootPath + result.path + '">' +
+            return '<a class="search-result-item" href="' + baseUrl + result.path + '">' +
                    '<div class="search-result-title">' + highlightedTitle + '</div>' +
                    (highlightedSnippet ? '<div class="search-result-snippet">' + highlightedSnippet + '</div>' : '') +
                    '</a>';
