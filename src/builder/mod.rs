@@ -2,6 +2,7 @@ mod images;
 mod nunjucks;
 mod openapi;
 mod renderer;
+mod sitemap;
 pub mod svg;
 mod template;
 
@@ -149,6 +150,8 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_sea
         let html_content = render_markdown_with_hardbreaks(&content, config.hardbreaks);
         // Apply glossary terms
         let html_content = apply_glossary(&html_content, &glossary);
+        // Process sitemap directives
+        let html_content = sitemap::process_sitemap_directives(&html_content, &summary);
         let toc_items = extract_headings(&content);
         // Use front matter title if available, otherwise use config title
         let page_title = front_matter.as_ref()
@@ -192,8 +195,9 @@ fn write_static_assets(output: &Path, config: &BookConfig) -> Result<()> {
     let gitbook_dir = output.join("gitbook");
     fs::create_dir_all(&gitbook_dir)?;
 
-    // Write CSS
-    fs::write(gitbook_dir.join("gitbook.css"), GITBOOK_CSS)?;
+    // Write CSS (including sitemap styles)
+    let css_content = format!("{}\n{}", GITBOOK_CSS, sitemap::get_sitemap_css());
+    fs::write(gitbook_dir.join("gitbook.css"), css_content)?;
 
     // Write JS
     fs::write(gitbook_dir.join("gitbook.js"), GITBOOK_JS)?;
@@ -350,6 +354,8 @@ fn build_chapters_inner(
 
                     // Apply glossary terms
                     let html_content = apply_glossary(&html_content, glossary);
+                    // Process sitemap directives
+                    let html_content = sitemap::process_sitemap_directives(&html_content, summary);
 
                     // Generate output path (use base_path without anchor)
                     // Handle .md, .adoc, and .asciidoc extensions
