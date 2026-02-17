@@ -399,7 +399,7 @@ fn test_serve_rejects_path_traversal() {
 
     // Verify normal access still works
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/", port))
+        .get(format!("http://127.0.0.1:{}/", port))
         .send()
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "Normal access should work");

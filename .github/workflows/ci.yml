@@ -28,7 +28,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
         run: cargo test
@@ -48,8 +48,8 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
-  fuzz:
-    name: Fuzz Parsers
+  parser-tests:
+    name: Parser & Security Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,13 +63,13 @@ jobs:
       - name: Build
         run: cargo build
 
-      - name: Fuzz SUMMARY.md parser
+      - name: Test SUMMARY.md parser
         run: cargo test --bin guidebook -- parser::summary::tests --nocapture
 
-      - name: Fuzz frontmatter parser
+      - name: Test frontmatter parser
         run: cargo test --bin guidebook -- parser::frontmatter::tests --nocapture
 
-      - name: Fuzz glossary parser
+      - name: Test glossary parser
         run: cargo test --bin guidebook -- parser::glossary::tests --nocapture
 
       - name: Run security-specific tests

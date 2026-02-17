@@ -399,7 +399,7 @@ mod tests {
         // Spawn a thread that sends slightly more than MAX_IMAGE_SIZE via chunked transfer
         let server_clone = Arc::clone(&server);
         let handle = std::thread::spawn(move || {
-            if let Some(request) = server_clone.recv().ok() {
+            if let Ok(request) = server_clone.recv() {
                 // Send a body slightly larger than MAX_IMAGE_SIZE using chunked encoding.
                 // tiny_http doesn't support true streaming, so we create a large Vec.
                 // We only need MAX_IMAGE_SIZE + 1 bytes to trigger the abort.
@@ -441,7 +441,7 @@ mod tests {
         // Spawn server2: serves actual image data
         let server2_clone = Arc::clone(&server2);
         let handle2 = std::thread::spawn(move || {
-            if let Some(request) = server2_clone.recv().ok() {
+            if let Ok(request) = server2_clone.recv() {
                 // Return a minimal 1x1 PNG
                 let png: &[u8] = &[
                     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG header
@@ -460,7 +460,7 @@ mod tests {
 
         let server1_clone = Arc::clone(&server1);
         let handle1 = std::thread::spawn(move || {
-            if let Some(request) = server1_clone.recv().ok() {
+            if let Ok(request) = server1_clone.recv() {
                 let header =
                     tiny_http::Header::from_bytes(b"Location" as &[u8], redirect_target.as_bytes())
                         .unwrap();

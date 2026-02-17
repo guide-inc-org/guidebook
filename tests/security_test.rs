@@ -80,7 +80,7 @@ fn test_serve_blocks_dotdot_traversal() {
 
     // Plain ../
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/../secret.txt", port))
+        .get(format!("http://127.0.0.1:{}/../secret.txt", port))
         .send();
     if let Ok(resp) = resp {
         assert_ne!(resp.status().as_u16(), 200, "../ should not return 200");
@@ -92,7 +92,7 @@ fn test_serve_blocks_dotdot_traversal() {
 
     // URL-encoded ../
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/..%2Fsecret.txt", port))
+        .get(format!("http://127.0.0.1:{}/..%2Fsecret.txt", port))
         .send();
     if let Ok(resp) = resp {
         assert_ne!(resp.status().as_u16(), 200, "..%2F should not return 200");
@@ -137,7 +137,7 @@ fn test_serve_blocks_html_fallback_traversal() {
     // This tests the .html fallback path: the server tries path.html if path doesn't exist
     // If ../etc/passwd doesn't exist, it tries ../etc/passwd.html — both should be blocked
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/../etc/passwd", port))
+        .get(format!("http://127.0.0.1:{}/../etc/passwd", port))
         .send();
     if let Ok(resp) = resp {
         let status = resp.status().as_u16();
@@ -185,7 +185,7 @@ fn test_serve_normal_access_works() {
 
     // Normal index page should work
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/", port))
+        .get(format!("http://127.0.0.1:{}/", port))
         .send()
         .unwrap();
     assert_eq!(
@@ -198,7 +198,7 @@ fn test_serve_normal_access_works() {
 
     // Non-existent page should return 404
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/nonexistent", port))
+        .get(format!("http://127.0.0.1:{}/nonexistent", port))
         .send()
         .unwrap();
     assert_eq!(
