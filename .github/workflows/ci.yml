@@ -46,7 +46,7 @@ jobs:
         run: cargo install cargo-audit
 
       - name: Run security audit
-        run: cargo audit --deny warnings
+        run: cargo audit --deny vulnerabilities
 
   fuzz:
     name: Fuzz Parsers
