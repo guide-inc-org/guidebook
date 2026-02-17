@@ -74,7 +74,11 @@ fn render_item(html: &mut String, item: &SummaryItem, depth: u8, max_depth: Opti
     }
 
     match item {
-        SummaryItem::Link { title, path, children } => {
+        SummaryItem::Link {
+            title,
+            path,
+            children,
+        } => {
             // Top-level items become sections
             if depth == 1 {
                 html.push_str(r#"<div class="sitemap-section">"#);
@@ -93,12 +97,15 @@ fn render_item(html: &mut String, item: &SummaryItem, depth: u8, max_depth: Opti
                 let html_path = to_html_path(p);
                 html.push_str(&format!(
                     r#"<div class="{}"><a href="{}">{}</a></div>"#,
-                    class, html_path, html_escape(title)
+                    class,
+                    html_path,
+                    html_escape(title)
                 ));
             } else {
                 html.push_str(&format!(
                     r#"<div class="{}">{}</div>"#,
-                    class, html_escape(title)
+                    class,
+                    html_escape(title)
                 ));
             }
             html.push('\n');
@@ -136,7 +143,12 @@ fn render_children(html: &mut String, children: &[SummaryItem], depth: u8, max_d
     let mut branch_items: Vec<&SummaryItem> = Vec::new();
 
     for child in children {
-        if let SummaryItem::Link { title, path, children: grandchildren } = child {
+        if let SummaryItem::Link {
+            title,
+            path,
+            children: grandchildren,
+        } = child
+        {
             if grandchildren.is_empty() {
                 leaf_items.push((title, path.as_deref()));
             } else {
@@ -156,7 +168,8 @@ fn render_children(html: &mut String, children: &[SummaryItem], depth: u8, max_d
                 let html_path = to_html_path(p);
                 html.push_str(&format!(
                     r#"<a href="{}">{}</a>"#,
-                    html_path, html_escape(title)
+                    html_path,
+                    html_escape(title)
                 ));
             } else {
                 html.push_str(&html_escape(title));

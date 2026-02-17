@@ -39,7 +39,7 @@ impl Glossary {
             }
 
             // Check for term heading (## Term)
-            if trimmed.starts_with("## ") {
+            if let Some(heading) = trimmed.strip_prefix("## ") {
                 // Save previous entry if exists
                 if let Some(term) = current_term.take() {
                     let definition = current_definition.trim().to_string();
@@ -49,7 +49,7 @@ impl Glossary {
                 }
 
                 // Start new entry
-                current_term = Some(trimmed[3..].trim().to_string());
+                current_term = Some(heading.trim().to_string());
                 current_definition.clear();
                 continue;
             }
@@ -73,7 +73,7 @@ impl Glossary {
 
         // Sort terms by length (longest first) to avoid partial replacements
         let mut sorted_terms: Vec<String> = entries.keys().cloned().collect();
-        sorted_terms.sort_by(|a, b| b.len().cmp(&a.len()));
+        sorted_terms.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
         Ok(Self {
             entries,
@@ -192,9 +192,16 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
 
             // no-glossary class detection (can be on any element)
             // Check for opening tags with no-glossary class
-            if !tag_lower.starts_with('/') && tag_lower.contains("class=") && tag_lower.contains("no-glossary") {
+            if !tag_lower.starts_with('/')
+                && tag_lower.contains("class=")
+                && tag_lower.contains("no-glossary")
+            {
                 // Extract the tag name (first word before space or end)
-                let tag_name = tag_lower.split_whitespace().next().unwrap_or("").to_string();
+                let tag_name = tag_lower
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
                 if !tag_name.is_empty() {
                     no_glossary_stack.push(tag_name);
                 }
@@ -202,7 +209,11 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
             // Track closing tags for no-glossary elements
             if tag_lower.starts_with('/') && !no_glossary_stack.is_empty() {
                 // Extract closing tag name (remove leading /)
-                let closing_tag = tag_lower.trim_start_matches('/').split_whitespace().next().unwrap_or("");
+                let closing_tag = tag_lower
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
                 // Pop from stack if it matches the most recent no-glossary element
                 if let Some(last) = no_glossary_stack.last() {
                     if last == closing_tag {
@@ -222,7 +233,13 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
         }
 
         // Skip replacement inside excluded elements
-        if in_code || in_glossary_span || in_anchor || in_heading || in_script || !no_glossary_stack.is_empty() {
+        if in_code
+            || in_glossary_span
+            || in_anchor
+            || in_heading
+            || in_script
+            || !no_glossary_stack.is_empty()
+        {
             result.push(c);
             continue;
         }
@@ -259,7 +276,7 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
 
 /// Check if a character is a word character (alphanumeric or Japanese)
 fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c > '\x7F'  // Japanese characters
+    c.is_alphanumeric() || c > '\x7F' // Japanese characters
 }
 
 /// Escape a string for use in an HTML attribute
@@ -309,7 +326,9 @@ Web APIの設計スタイルの一つ。
         let glossary = Glossary::parse(content).unwrap();
         assert_eq!(
             glossary.get("REST"),
-            Some(&"Representational State Transfer の略。 Web APIの設計スタイルの一つ。".to_string())
+            Some(
+                &"Representational State Transfer の略。 Web APIの設計スタイルの一つ。".to_string()
+            )
         );
     }
 
@@ -318,7 +337,8 @@ Web APIの設計スタイルの一つ。
         let glossary = Glossary::parse("## API\nInterface").unwrap();
         let html = "<p>This is an API example.</p>";
         let result = apply_glossary(html, &glossary);
-        assert!(result.contains(r#"<span class="glossary-term" data-definition="Interface">API</span>"#));
+        assert!(result
+            .contains(r#"<span class="glossary-term" data-definition="Interface">API</span>"#));
     }
 
     #[test]
@@ -375,7 +395,9 @@ Representational State Transfer
         // API inside anchor should not be wrapped
         assert!(result.contains(">API documentation</a>"));
         // But standalone API outside anchor should be wrapped
-        assert!(result.contains(r#"<span class="glossary-term" data-definition="Interface">API</span>.</p>"#));
+        assert!(result.contains(
+            r#"<span class="glossary-term" data-definition="Interface">API</span>.</p>"#
+        ));
     }
 
     #[test]
@@ -386,7 +408,8 @@ Representational State Transfer
         // API inside h1 should not be wrapped
         assert!(result.contains("<h1>API Overview</h1>"));
         // But API in paragraph should be wrapped
-        assert!(result.contains(r#"<span class="glossary-term" data-definition="Interface">API</span>"#));
+        assert!(result
+            .contains(r#"<span class="glossary-term" data-definition="Interface">API</span>"#));
     }
 
     #[test]
@@ -397,7 +420,11 @@ Representational State Transfer
         for level in 1..=6 {
             let html = format!("<h{}>API</h{}>", level, level);
             let result = apply_glossary(&html, &glossary);
-            assert!(!result.contains("glossary-term"), "h{} should exclude glossary", level);
+            assert!(
+                !result.contains("glossary-term"),
+                "h{} should exclude glossary",
+                level
+            );
             assert!(result.contains(&format!("<h{}>API</h{}>", level, level)));
         }
     }
@@ -410,7 +437,8 @@ Representational State Transfer
         // API inside script should not be wrapped
         assert!(result.contains(r#"<script>const API = "test";</script>"#));
         // But API in paragraph should be wrapped
-        assert!(result.contains(r#"<span class="glossary-term" data-definition="Interface">API</span>"#));
+        assert!(result
+            .contains(r#"<span class="glossary-term" data-definition="Interface">API</span>"#));
     }
 
     #[test]
@@ -422,7 +450,10 @@ Representational State Transfer
         assert!(result.contains(r#"<div class="no-glossary">API is excluded here.</div>"#));
         // But API outside should be wrapped (count occurrences)
         let glossary_count = result.matches("glossary-term").count();
-        assert_eq!(glossary_count, 2, "Should have 2 glossary terms (before and after no-glossary)");
+        assert_eq!(
+            glossary_count, 2,
+            "Should have 2 glossary terms (before and after no-glossary)"
+        );
     }
 
     #[test]
@@ -433,7 +464,9 @@ Representational State Transfer
         // API inside no-glossary (even nested) should not be wrapped
         assert!(result.contains(r#"<div class="no-glossary"><p>API in <span>nested API</span>"#));
         // But API outside should be wrapped
-        assert!(result.contains(r#"<span class="glossary-term" data-definition="Interface">API</span> outside"#));
+        assert!(result.contains(
+            r#"<span class="glossary-term" data-definition="Interface">API</span> outside"#
+        ));
     }
 
     #[test]
@@ -455,6 +488,7 @@ Representational State Transfer
         // API inside anchor with attributes should not be wrapped
         assert!(result.contains(">API Guide</a>"));
         // API outside should be wrapped
-        assert!(result.contains(r#"<span class="glossary-term" data-definition="Interface">API</span>."#));
+        assert!(result
+            .contains(r#"<span class="glossary-term" data-definition="Interface">API</span>."#));
     }
 }

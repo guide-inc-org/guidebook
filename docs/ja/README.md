@@ -15,6 +15,10 @@
 # インストール
 curl -fsSL https://raw.githubusercontent.com/guide-inc-org/guidebook/main/install.sh | sh
 
+# 新しいブックを初期化
+guidebook init my-book
+cd my-book
+
 # プレビュー
 guidebook serve
 

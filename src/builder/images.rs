@@ -11,12 +11,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Maximum allowed image download size (50 MB)
+const MAX_IMAGE_SIZE: usize = 50 * 1024 * 1024;
+
 /// Downloads and caches remote images for offline viewing
 pub struct ImageDownloader {
     client: Client,
     cache: HashMap<String, String>,
-    #[allow(dead_code)]
-    output_dir: PathBuf,
     images_dir: PathBuf,
 }
 
@@ -36,7 +37,6 @@ impl ImageDownloader {
         ImageDownloader {
             client,
             cache: HashMap::new(),
-            output_dir: output_dir.to_path_buf(),
             images_dir,
         }
     }
@@ -72,10 +72,8 @@ impl ImageDownloader {
             // Download the image and get local path
             match self.download_image(url) {
                 Ok(local_path) => {
-                    let new_tag = format!(
-                        r#"<img {}src="{}"{}"#,
-                        before_src, local_path, after_src
-                    );
+                    let new_tag =
+                        format!(r#"<img {}src="{}"{}"#, before_src, local_path, after_src);
                     // Close the tag properly
                     let new_tag = if full_match.ends_with("/>") {
                         format!("{}/>", new_tag)
@@ -117,6 +115,16 @@ impl ImageDownloader {
         }
 
         let bytes = response.bytes()?;
+
+        // Check image size limit
+        if bytes.len() > MAX_IMAGE_SIZE {
+            return Err(format!(
+                "Image too large ({:.1} MB, max {} MB)",
+                bytes.len() as f64 / 1024.0 / 1024.0,
+                MAX_IMAGE_SIZE / 1024 / 1024
+            )
+            .into());
+        }
 
         // Generate filename from URL hash + detected extension
         let hash = crc32_hash(url);
@@ -220,32 +228,59 @@ mod tests {
         let hash3 = crc32_hash("https://example.com/other.png");
 
         assert_eq!(hash1, hash2, "Same input should produce same hash");
-        assert_ne!(hash1, hash3, "Different input should produce different hash");
+        assert_ne!(
+            hash1, hash3,
+            "Different input should produce different hash"
+        );
     }
 
     #[test]
     fn test_detect_extension_from_magic_bytes() {
         // PNG magic bytes
         let png_bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
-        assert_eq!(detect_extension("http://example.com/image", &png_bytes), "png");
+        assert_eq!(
+            detect_extension("http://example.com/image", &png_bytes),
+            "png"
+        );
 
         // JPEG magic bytes
         let jpg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
-        assert_eq!(detect_extension("http://example.com/image", &jpg_bytes), "jpg");
+        assert_eq!(
+            detect_extension("http://example.com/image", &jpg_bytes),
+            "jpg"
+        );
 
         // GIF magic bytes
         let gif_bytes = b"GIF89a\x00\x00";
-        assert_eq!(detect_extension("http://example.com/image", gif_bytes), "gif");
+        assert_eq!(
+            detect_extension("http://example.com/image", gif_bytes),
+            "gif"
+        );
     }
 
     #[test]
     fn test_detect_extension_from_url() {
         let empty: &[u8] = &[];
-        assert_eq!(detect_extension("https://example.com/image.png", empty), "png");
-        assert_eq!(detect_extension("https://example.com/image.jpg", empty), "jpg");
-        assert_eq!(detect_extension("https://example.com/image.jpeg", empty), "jpg");
-        assert_eq!(detect_extension("https://example.com/image.gif", empty), "gif");
-        assert_eq!(detect_extension("https://example.com/image.webp", empty), "webp");
+        assert_eq!(
+            detect_extension("https://example.com/image.png", empty),
+            "png"
+        );
+        assert_eq!(
+            detect_extension("https://example.com/image.jpg", empty),
+            "jpg"
+        );
+        assert_eq!(
+            detect_extension("https://example.com/image.jpeg", empty),
+            "jpg"
+        );
+        assert_eq!(
+            detect_extension("https://example.com/image.gif", empty),
+            "gif"
+        );
+        assert_eq!(
+            detect_extension("https://example.com/image.webp", empty),
+            "webp"
+        );
 
         // With query parameters
         assert_eq!(
@@ -259,6 +294,9 @@ mod tests {
         let empty: &[u8] = &[];
         // Unknown extension should default to png
         assert_eq!(detect_extension("https://example.com/image", empty), "png");
-        assert_eq!(detect_extension("https://example.com/image.xyz", empty), "png");
+        assert_eq!(
+            detect_extension("https://example.com/image.xyz", empty),
+            "png"
+        );
     }
 }

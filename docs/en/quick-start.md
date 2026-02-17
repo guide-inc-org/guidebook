@@ -1,8 +1,27 @@
 # Quick Start
 
-## Create a New Book
+## Initialize a New Book
 
-Create a folder with the following structure:
+The fastest way to start:
+
+```bash
+guidebook init my-book
+```
+
+This creates:
+
+```
+my-book/
+├── book.json       # Configuration
+├── README.md       # Introduction (becomes index.html)
+└── SUMMARY.md      # Table of contents
+```
+
+Edit `SUMMARY.md` to add chapters, then start writing.
+
+## Manual Setup
+
+Alternatively, create the structure yourself:
 
 ```
 my-book/

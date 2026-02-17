@@ -6,29 +6,35 @@ mod sitemap;
 pub mod svg;
 mod template;
 
-use crate::parser::{self, apply_glossary, parse_front_matter, BookConfig, Glossary, Language, Summary, SummaryItem};
+use crate::parser::{
+    self, apply_glossary, parse_front_matter, BookConfig, Glossary, Language, Summary, SummaryItem,
+};
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Instant;
+
+/// Regex for matching `<!-- @import("path") -->` directives
+static IMPORT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<!--\s*@import\s*\(\s*"([^"]+)"\s*\)\s*-->"#).unwrap());
 
 // nunjucks module is used internally for template processing
 pub use renderer::{
-    render_markdown, render_markdown_with_path, render_markdown_with_hardbreaks,
-    render_asciidoc, render_asciidoc_with_path,
-    extract_headings, extract_headings_from_asciidoc, TocItem
+    extract_headings, extract_headings_from_asciidoc, render_asciidoc, render_asciidoc_with_path,
+    render_markdown, render_markdown_with_hardbreaks, render_markdown_with_path, TocItem,
 };
 pub use template::Templates;
 
 /// Check if a file is an AsciiDoc file based on its extension
 pub fn is_asciidoc_file(path: &Path) -> bool {
-    match path.extension().and_then(|s| s.to_str()) {
-        Some("adoc") | Some("asciidoc") => true,
-        _ => false,
-    }
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("adoc") | Some("asciidoc")
+    )
 }
 
 /// Search index entry
@@ -61,11 +67,20 @@ pub fn build(source: &Path, output: &Path) -> Result<()> {
 /// Build the book with options (skip_search_index for hot reload)
 pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool) -> Result<()> {
     let start_time = Instant::now();
-    let source = source.canonicalize().context("Source directory not found")?;
+    let source = source
+        .canonicalize()
+        .context("Source directory not found")?;
 
     println!("Loading book configuration...");
     let config = BookConfig::load(&source)?;
-    println!("  Title: {}", if config.title.is_empty() { "(untitled)" } else { &config.title });
+    println!(
+        "  Title: {}",
+        if config.title.is_empty() {
+            "(untitled)"
+        } else {
+            &config.title
+        }
+    );
 
     // Check for multi-language book
     let languages = parser::langs::parse_langs(&source)?;
@@ -76,7 +91,10 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
         build_single_book(&source, output, &config, skip_search_index, None)?
     } else {
         // Multi-language book
-        println!("Building multi-language book with {} languages:", languages.len());
+        println!(
+            "Building multi-language book with {} languages:",
+            languages.len()
+        );
         for lang in &languages {
             println!("  - {} ({})", lang.title, lang.code);
         }
@@ -93,13 +111,25 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
     let elapsed_secs = elapsed.as_secs_f64();
 
     println!();
-    println!(">> generation finished with success in {:.1}s !", elapsed_secs);
-    println!("   {} pages built, {} asset files copied", stats.pages, stats.assets);
+    println!(
+        ">> generation finished with success in {:.1}s !",
+        elapsed_secs
+    );
+    println!(
+        "   {} pages built, {} asset files copied",
+        stats.pages, stats.assets
+    );
 
     Ok(())
 }
 
-fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_search_index: bool, lang_prefix: Option<&str>) -> Result<BuildStats> {
+fn build_single_book(
+    source: &Path,
+    output: &Path,
+    config: &BookConfig,
+    skip_search_index: bool,
+    lang_prefix: Option<&str>,
+) -> Result<BuildStats> {
     let summary = Summary::parse(source)?;
     let templates = Templates::new(config)?;
     let mut stats = BuildStats::default();
@@ -130,7 +160,16 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_sea
     }
 
     // Build each chapter
-    stats.pages += build_chapters(source, output, &summary.items, config, &templates, &summary, &glossary, lang_prefix)?;
+    stats.pages += build_chapters(
+        source,
+        output,
+        &summary.items,
+        config,
+        &templates,
+        &summary,
+        &glossary,
+        lang_prefix,
+    )?;
 
     // Generate index.html from README.md if exists
     let readme_path = source.join("README.md");
@@ -154,7 +193,8 @@ fn build_single_book(source: &Path, output: &Path, config: &BookConfig, skip_sea
         let html_content = sitemap::process_sitemap_directives(&html_content, &summary);
         let toc_items = extract_headings(&content);
         // Use front matter title if available, otherwise use config title
-        let page_title = front_matter.as_ref()
+        let page_title = front_matter
+            .as_ref()
             .and_then(|fm| fm.title.as_deref())
             .unwrap_or(&config.title);
         let page_html = templates.render_page_with_meta(
@@ -247,7 +287,13 @@ fn build_multi_lang_book(
             config.clone()
         };
 
-        let lang_stats = build_single_book(&lang_source, &lang_output, &lang_config, skip_search_index, Some(&lang.code))?;
+        let lang_stats = build_single_book(
+            &lang_source,
+            &lang_output,
+            &lang_config,
+            skip_search_index,
+            Some(&lang.code),
+        )?;
         stats.pages += lang_stats.pages;
         stats.assets += lang_stats.assets;
     }
@@ -261,6 +307,7 @@ fn build_multi_lang_book(
     Ok(stats)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_chapters(
     source: &Path,
     output: &Path,
@@ -272,9 +319,20 @@ fn build_chapters(
     lang_prefix: Option<&str>,
 ) -> Result<usize> {
     let mut built_files: std::collections::HashSet<String> = std::collections::HashSet::new();
-    build_chapters_inner(source, output, items, config, templates, summary, glossary, &mut built_files, lang_prefix)
+    build_chapters_inner(
+        source,
+        output,
+        items,
+        config,
+        templates,
+        summary,
+        glossary,
+        &mut built_files,
+        lang_prefix,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_chapters_inner(
     source: &Path,
     output: &Path,
@@ -289,7 +347,12 @@ fn build_chapters_inner(
     let mut count = 0;
 
     for item in items {
-        if let SummaryItem::Link { title, path, children } = item {
+        if let SummaryItem::Link {
+            title,
+            path,
+            children,
+        } = item
+        {
             if let Some(md_path) = path {
                 // Extract base file path (remove anchor #xxx if present)
                 // Also strip leading slash to handle absolute-style paths in SUMMARY.md
@@ -303,7 +366,17 @@ fn build_chapters_inner(
                 if base_path.is_empty() || built_files.contains(base_path) {
                     // Still need to process children
                     if !children.is_empty() {
-                        count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files, lang_prefix)?;
+                        count += build_chapters_inner(
+                            source,
+                            output,
+                            children,
+                            config,
+                            templates,
+                            summary,
+                            glossary,
+                            built_files,
+                            lang_prefix,
+                        )?;
                     }
                     continue;
                 }
@@ -340,14 +413,20 @@ fn build_chapters_inner(
                     } else {
                         // Markdown rendering
                         // Process @import directives before template processing
-                        let imported_content = process_imports_for_file(&parsed.content, &src_file)?;
+                        let imported_content =
+                            process_imports_for_file(&parsed.content, &src_file)?;
                         // Process Nunjucks templates (conditionals, loops, filters, variables)
-                        let content = nunjucks::process_nunjucks_templates(&imported_content, config)
-                            .unwrap_or_else(|e| {
-                                eprintln!("  Warning: Template error in {}: {}", base_path, e);
-                                imported_content.clone()
-                            });
-                        let html = render_markdown_with_path(&content, Some(&full_path), config.hardbreaks);
+                        let content =
+                            nunjucks::process_nunjucks_templates(&imported_content, config)
+                                .unwrap_or_else(|e| {
+                                    eprintln!("  Warning: Template error in {}: {}", base_path, e);
+                                    imported_content.clone()
+                                });
+                        let html = render_markdown_with_path(
+                            &content,
+                            Some(&full_path),
+                            config.hardbreaks,
+                        );
                         let toc = extract_headings(&content);
                         (html, toc)
                     };
@@ -374,7 +453,8 @@ fn build_chapters_inner(
                     };
 
                     // Use front matter title if available, otherwise use summary title
-                    let page_title = front_matter.as_ref()
+                    let page_title = front_matter
+                        .as_ref()
                         .and_then(|fm| fm.title.as_deref())
                         .unwrap_or(title);
 
@@ -407,7 +487,17 @@ fn build_chapters_inner(
 
             // Build children recursively
             if !children.is_empty() {
-                count += build_chapters_inner(source, output, children, config, templates, summary, glossary, built_files, lang_prefix)?;
+                count += build_chapters_inner(
+                    source,
+                    output,
+                    children,
+                    config,
+                    templates,
+                    summary,
+                    glossary,
+                    built_files,
+                    lang_prefix,
+                )?;
             }
         }
     }
@@ -429,16 +519,13 @@ fn copy_assets(source: &Path, output: &Path) -> Result<usize> {
     }
 
     // Also copy nested asset directories (e.g., chapter/image/)
-    for entry in walkdir::WalkDir::new(source)
-        .into_iter()
-        .filter_entry(|e| {
-            // Skip root-level asset dirs (already copied) and output directories
-            let name = e.file_name().to_string_lossy();
-            !(e.depth() == 1 && asset_dir_names.contains(&name.as_ref()))
-                && name != "_book"
-                && name != "node_modules"
-        })
-    {
+    for entry in walkdir::WalkDir::new(source).into_iter().filter_entry(|e| {
+        // Skip root-level asset dirs (already copied) and output directories
+        let name = e.file_name().to_string_lossy();
+        !(e.depth() == 1 && asset_dir_names.contains(&name.as_ref()))
+            && name != "_book"
+            && name != "node_modules"
+    }) {
         let entry = entry?;
         if entry.file_type().is_dir() {
             let name = entry.file_name().to_string_lossy();
@@ -568,10 +655,7 @@ fn strip_html_tags(html: &str) -> String {
     }
 
     // Clean up whitespace
-    result
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Collect search entries from summary items
@@ -581,7 +665,12 @@ fn collect_search_entries(
     entries: &mut Vec<SearchEntry>,
 ) -> Result<()> {
     for item in items {
-        if let SummaryItem::Link { title, path, children } = item {
+        if let SummaryItem::Link {
+            title,
+            path,
+            children,
+        } = item
+        {
             if let Some(file_path) = path {
                 // Strip leading slash to handle absolute-style paths in SUMMARY.md
                 let file_path = file_path.trim_start_matches('/');
@@ -672,7 +761,11 @@ fn process_remote_images(output: &Path) -> Result<usize> {
                             }
                         }
                         Err(e) => {
-                            eprintln!("  Warning: Failed to process {}: {}", entry.path().display(), e);
+                            eprintln!(
+                                "  Warning: Failed to process {}: {}",
+                                entry.path().display(),
+                                e
+                            );
                         }
                     }
                 }
@@ -687,14 +780,15 @@ fn process_remote_images(output: &Path) -> Result<usize> {
 /// Process @import directives in Markdown content
 /// Replaces <!-- @import("path/to/file.md") --> with the contents of the referenced file
 /// Supports recursive imports with loop prevention
-fn process_imports(content: &str, base_path: &Path, visited: &mut HashSet<PathBuf>) -> Result<String> {
-    // Regex to match <!-- @import("path/to/file") --> with optional whitespace
-    let re = Regex::new(r#"<!--\s*@import\s*\(\s*"([^"]+)"\s*\)\s*-->"#).unwrap();
-
+fn process_imports(
+    content: &str,
+    base_path: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<String> {
     let mut result = content.to_string();
     let mut offset: i64 = 0;
 
-    for caps in re.captures_iter(content) {
+    for caps in IMPORT_REGEX.captures_iter(content) {
         let full_match = caps.get(0).unwrap();
         let import_path = &caps[1];
 
@@ -704,14 +798,20 @@ fn process_imports(content: &str, base_path: &Path, visited: &mut HashSet<PathBu
             Ok(p) => p,
             Err(_) => {
                 // File doesn't exist, leave the directive as-is and warn
-                eprintln!("  Warning: @import file not found: {}", resolved_path.display());
+                eprintln!(
+                    "  Warning: @import file not found: {}",
+                    resolved_path.display()
+                );
                 continue;
             }
         };
 
         // Check for circular imports
         if visited.contains(&canonical_path) {
-            eprintln!("  Warning: Circular @import detected, skipping: {}", canonical_path.display());
+            eprintln!(
+                "  Warning: Circular @import detected, skipping: {}",
+                canonical_path.display()
+            );
             continue;
         }
 
@@ -723,9 +823,13 @@ fn process_imports(content: &str, base_path: &Path, visited: &mut HashSet<PathBu
             Ok(c) => {
                 // Strip UTF-8 BOM if present (fixes reference link parsing)
                 c.strip_prefix('\u{FEFF}').unwrap_or(&c).to_string()
-            },
+            }
             Err(e) => {
-                eprintln!("  Warning: Failed to read @import file {}: {}", canonical_path.display(), e);
+                eprintln!(
+                    "  Warning: Failed to read @import file {}: {}",
+                    canonical_path.display(),
+                    e
+                );
                 continue;
             }
         };
@@ -788,6 +892,15 @@ fn apply_svg_processing(html: String, output_dir: &Path, config: &BookConfig) ->
 /// Replaces {{ book.xxx }} patterns with values from config.variables
 /// Preserves variables inside code blocks (``` ... ```) and inline code (` ... `)
 #[cfg(test)]
+static VAR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{\s*book\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}").unwrap());
+#[cfg(test)]
+static FENCED_CODE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap());
+#[cfg(test)]
+static INLINE_CODE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`\n]+`").unwrap());
+
+#[cfg(test)]
 fn expand_variables(content: &str, config: &BookConfig) -> String {
     if config.variables.is_empty() {
         return content.to_string();
@@ -799,21 +912,18 @@ fn expand_variables(content: &str, config: &BookConfig) -> String {
     // Find all protected regions (fenced code blocks and inline code)
     let protected_regions = find_protected_regions(content);
 
-    // Match {{ book.xxx }} pattern with optional whitespace
-    let var_re = Regex::new(r"\{\{\s*book\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}").unwrap();
-
     let mut result = String::new();
     let mut last_end = 0;
 
-    for caps in var_re.captures_iter(content) {
+    for caps in VAR_REGEX.captures_iter(content) {
         let full_match = caps.get(0).unwrap();
         let start = full_match.start();
         let end = full_match.end();
 
         // Check if this match is inside a protected region
-        let is_protected = protected_regions.iter().any(|(region_start, region_end)| {
-            start >= *region_start && end <= *region_end
-        });
+        let is_protected = protected_regions
+            .iter()
+            .any(|(region_start, region_end)| start >= *region_start && end <= *region_end);
 
         // Add content before this match
         result.push_str(&content[last_end..start]);
@@ -856,18 +966,16 @@ fn find_protected_regions(content: &str) -> Vec<(usize, usize)> {
     let mut regions = Vec::new();
 
     // Find fenced code blocks (``` ... ```) - must come first as they take priority
-    let fenced_re = Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap();
-    for m in fenced_re.find_iter(content) {
+    for m in FENCED_CODE_REGEX.find_iter(content) {
         regions.push((m.start(), m.end()));
     }
 
     // Find inline code (` ... `) but not if inside fenced blocks
-    let inline_re = Regex::new(r"`[^`\n]+`").unwrap();
-    for m in inline_re.find_iter(content) {
+    for m in INLINE_CODE_REGEX.find_iter(content) {
         // Only add if not overlapping with existing regions
-        let overlaps = regions.iter().any(|(start, end)| {
-            m.start() >= *start && m.end() <= *end
-        });
+        let overlaps = regions
+            .iter()
+            .any(|(start, end)| m.start() >= *start && m.end() <= *end);
         if !overlaps {
             regions.push((m.start(), m.end()));
         }
@@ -1072,7 +1180,10 @@ After code block: {{ book.version }}"#;
         let content = "Normal: {{ book.var }}, inline: `{{ book.var }}`, after: {{ book.var }}";
         let result = expand_variables(content, &config);
 
-        assert_eq!(result, "Normal: value, inline: `{{ book.var }}`, after: value");
+        assert_eq!(
+            result,
+            "Normal: value, inline: `{{ book.var }}`, after: value"
+        );
     }
 
     #[test]

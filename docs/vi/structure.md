@@ -44,6 +44,20 @@ Trang giới thiệu, trở thành `index.html`.
 
 File cấu hình. Xem [Cấu hình](config.md).
 
+### GLOSSARY.md
+
+Định nghĩa thuật ngữ được tự động liên kết trong toàn bộ sách:
+
+```markdown
+## API
+Application Programming Interface
+
+## HTML
+HyperText Markup Language
+```
+
+Thuật ngữ hiển thị tooltip khi hover. Xem [Bảng thuật ngữ](features/glossary.md).
+
 ### LANGS.md
 
 Cho sách đa ngôn ngữ:

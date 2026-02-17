@@ -1,15 +1,18 @@
-mod parser;
 mod builder;
+mod parser;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
-use std::fs;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-use tiny_http::{Server, Response, Header};
-use notify::{Watcher, RecursiveMode, Event, EventKind};
 use notify::event::ModifyKind;
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use percent_encoding::percent_decode_str;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use tiny_http::{Header, Response, Server};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -62,19 +65,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { path } => {
-            init_book(&path)
-        }
+        Commands::Init { path } => init_book(&path),
         Commands::Build { path, output } => {
             println!("Building book from {:?} to {:?}", path, output);
             builder::build(&path, &output)
         }
-        Commands::Serve { path, port, open } => {
-            serve_book(&path, port, open)
-        }
-        Commands::Update => {
-            update_self()
-        }
+        Commands::Serve { path, port, open } => serve_book(&path, port, open),
+        Commands::Update => update_self(),
     }
 }
 
@@ -144,7 +141,7 @@ This file serves as your book's introduction or preface.
     Ok(())
 }
 
-fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
+fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
     // Build to temp directory
     let temp_dir = std::env::temp_dir().join("guidebook-serve");
     if temp_dir.exists() {
@@ -157,7 +154,7 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
     // Version counter for hot reload
     let version = Arc::new(AtomicU64::new(1));
     let version_for_watcher = version.clone();
-    let source_for_watcher = source.clone();
+    let source_for_watcher = source.to_path_buf();
     let temp_dir_for_watcher = temp_dir.clone();
 
     // Setup file watcher
@@ -166,10 +163,10 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
             // Only react to file modifications
             let dominated: bool = matches!(
                 event.kind,
-                EventKind::Modify(ModifyKind::Data(_)) |
-                EventKind::Modify(ModifyKind::Name(_)) |
-                EventKind::Create(_) |
-                EventKind::Remove(_)
+                EventKind::Modify(ModifyKind::Data(_))
+                    | EventKind::Modify(ModifyKind::Name(_))
+                    | EventKind::Create(_)
+                    | EventKind::Remove(_)
             );
             if dominated {
                 // Check if it's a relevant file (md, json, css, js)
@@ -188,7 +185,11 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
                 if dominated {
                     println!("\n🔄 File changed, rebuilding...");
                     // Skip search index generation on hot reload for performance
-                    if let Err(e) = builder::build_with_options(&source_for_watcher, &temp_dir_for_watcher, true) {
+                    if let Err(e) = builder::build_with_options(
+                        &source_for_watcher,
+                        &temp_dir_for_watcher,
+                        true,
+                    ) {
                         eprintln!("   Build error: {}", e);
                     } else {
                         version_for_watcher.fetch_add(1, Ordering::SeqCst);
@@ -250,7 +251,10 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
                 format!(r#"{{"reload":false,"version":{}}}"#, current_version)
             };
 
-            let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+            let header =
+                Header::from_bytes("Content-Type", "application/json").unwrap_or_else(|_| {
+                    Header::from_bytes("Content-Type", "application/octet-stream").unwrap()
+                });
             let response = Response::from_string(response_body).with_header(header);
             let _ = request.respond(response);
             continue;
@@ -270,8 +274,25 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
             .to_string();
         let file_path = temp_dir.join(decoded_path.trim_start_matches('/'));
 
+        // Path traversal protection: ensure resolved path stays within temp_dir
+        if let Ok(canonical) = file_path.canonicalize() {
+            if !canonical.starts_with(&temp_dir) {
+                let response = Response::from_string("403 Forbidden").with_status_code(403);
+                let _ = request.respond(response);
+                continue;
+            }
+        }
+
         if file_path.exists() && file_path.is_file() {
-            let mut content = fs::read(&file_path).unwrap_or_default();
+            let mut content = match fs::read(&file_path) {
+                Ok(c) => c,
+                Err(_) => {
+                    let response =
+                        Response::from_string("500 Internal Server Error").with_status_code(500);
+                    let _ = request.respond(response);
+                    continue;
+                }
+            };
             let content_type = get_content_type(&file_path);
 
             // Inject livereload script into HTML pages
@@ -302,7 +323,9 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
                 content = html.into_bytes();
             }
 
-            let header = Header::from_bytes("Content-Type", content_type).unwrap();
+            let header = Header::from_bytes("Content-Type", content_type).unwrap_or_else(|_| {
+                Header::from_bytes("Content-Type", "application/octet-stream").unwrap()
+            });
             let response = Response::from_data(content).with_header(header);
             let _ = request.respond(response);
         } else {
@@ -310,8 +333,19 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
             let html_path = format!("{}.html", file_path.display());
             let html_path = PathBuf::from(&html_path);
             if html_path.exists() {
-                let content = fs::read(&html_path).unwrap_or_default();
-                let header = Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap();
+                let content = match fs::read(&html_path) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        let response = Response::from_string("500 Internal Server Error")
+                            .with_status_code(500);
+                        let _ = request.respond(response);
+                        continue;
+                    }
+                };
+                let header = Header::from_bytes("Content-Type", "text/html; charset=utf-8")
+                    .unwrap_or_else(|_| {
+                        Header::from_bytes("Content-Type", "application/octet-stream").unwrap()
+                    });
                 let response = Response::from_data(content).with_header(header);
                 let _ = request.respond(response);
             } else {
@@ -324,7 +358,7 @@ fn serve_book(source: &PathBuf, port: u16, open_browser: bool) -> Result<()> {
     Ok(())
 }
 
-fn get_content_type(path: &PathBuf) -> &'static str {
+fn get_content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("html") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
@@ -365,17 +399,11 @@ fn get_latest_version() -> Option<String> {
 
     let body = response.into_string().ok()?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-    json["crate"]["max_version"]
-        .as_str()
-        .map(String::from)
+    json["crate"]["max_version"].as_str().map(String::from)
 }
 
 fn is_newer_version(latest: &str, current: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> {
-        v.split('.')
-            .filter_map(|p| p.parse().ok())
-            .collect()
-    };
+    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|p| p.parse().ok()).collect() };
 
     let latest_parts = parse(latest);
     let current_parts = parse(current);
@@ -393,12 +421,13 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
 }
 
 fn update_self() -> Result<()> {
+    use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
 
     println!("Checking for updates...");
 
-    // Get latest version from GitHub
-    let latest_version = get_latest_github_version()
+    // Get latest version and release body from GitHub
+    let (latest_version, release_body) = get_latest_github_release()
         .ok_or_else(|| anyhow::anyhow!("Failed to check latest version"))?;
 
     println!("  Current version: {}", VERSION);
@@ -410,8 +439,8 @@ fn update_self() -> Result<()> {
     }
 
     // Detect platform
-    let artifact_name = get_artifact_name()
-        .ok_or_else(|| anyhow::anyhow!("Unsupported platform"))?;
+    let artifact_name =
+        get_artifact_name().ok_or_else(|| anyhow::anyhow!("Unsupported platform"))?;
 
     println!("\nDownloading {}...", artifact_name);
 
@@ -430,9 +459,26 @@ fn update_self() -> Result<()> {
     let mut bytes = Vec::new();
     response.into_reader().read_to_end(&mut bytes)?;
 
+    // Verify SHA256 checksum if available in release body
+    if let Some(expected_hash) = extract_checksum(&release_body, artifact_name) {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual_hash = format!("{:x}", hasher.finalize());
+        if actual_hash != expected_hash {
+            return Err(anyhow::anyhow!(
+                "Checksum mismatch!\n  Expected: {}\n  Actual:   {}\nDownload may be corrupted or tampered with.",
+                expected_hash, actual_hash
+            ));
+        }
+        println!("  Checksum verified ✓");
+    } else {
+        eprintln!("  Warning: No checksum found in release notes, skipping verification");
+    }
+
     // Get current executable path
     let current_exe = std::env::current_exe()?;
-    let exe_dir = current_exe.parent()
+    let exe_dir = current_exe
+        .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot get executable directory"))?;
 
     // Extract binary
@@ -444,7 +490,11 @@ fn update_self() -> Result<()> {
 
     // Replace current executable
     let backup_path = exe_dir.join("guidebook.backup");
-    let new_exe_path = exe_dir.join(if cfg!(windows) { "guidebook_new.exe" } else { "guidebook_new" });
+    let new_exe_path = exe_dir.join(if cfg!(windows) {
+        "guidebook_new.exe"
+    } else {
+        "guidebook_new"
+    });
 
     // Write new binary
     let mut file = fs::File::create(&new_exe_path)?;
@@ -475,18 +525,41 @@ fn update_self() -> Result<()> {
     Ok(())
 }
 
-fn get_latest_github_version() -> Option<String> {
-    let response = ureq::get("https://api.github.com/repos/guide-inc-org/guidebook/releases/latest")
-        .set("User-Agent", &format!("guidebook/{}", VERSION))
-        .timeout(std::time::Duration::from_secs(10))
-        .call()
-        .ok()?;
+/// Extract SHA256 checksum for a given artifact from release body text
+/// Expected format in release body: `<sha256hash>  <filename>`
+fn extract_checksum(release_body: &str, artifact_name: &str) -> Option<String> {
+    for line in release_body.lines() {
+        let trimmed = line.trim();
+        // Match lines like: "abc123def456...  guidebook-linux-x86_64.tar.gz"
+        if trimmed.ends_with(artifact_name) {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() == 2
+                && parts[0].len() == 64
+                && parts[0].chars().all(|c| c.is_ascii_hexdigit())
+            {
+                return Some(parts[0].to_lowercase());
+            }
+        }
+    }
+    None
+}
+
+/// Get latest GitHub release version and body text
+fn get_latest_github_release() -> Option<(String, String)> {
+    let response =
+        ureq::get("https://api.github.com/repos/guide-inc-org/guidebook/releases/latest")
+            .set("User-Agent", &format!("guidebook/{}", VERSION))
+            .timeout(std::time::Duration::from_secs(10))
+            .call()
+            .ok()?;
 
     let body = response.into_string().ok()?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-    json["tag_name"]
+    let version = json["tag_name"]
         .as_str()
-        .map(|s| s.trim_start_matches('v').to_string())
+        .map(|s| s.trim_start_matches('v').to_string())?;
+    let release_body = json["body"].as_str().unwrap_or("").to_string();
+    Some((version, release_body))
 }
 
 fn get_artifact_name() -> Option<&'static str> {
@@ -504,8 +577,8 @@ fn get_artifact_name() -> Option<&'static str> {
 
 fn extract_tar_gz(data: &[u8]) -> Result<Vec<u8>> {
     use flate2::read::GzDecoder;
-    use tar::Archive;
     use std::io::{Cursor, Read};
+    use tar::Archive;
 
     let decoder = GzDecoder::new(Cursor::new(data));
     let mut archive = Archive::new(decoder);

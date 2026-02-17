@@ -44,6 +44,20 @@ my-book/
 
 設定ファイル。詳細は[設定](config.md)を参照。
 
+### GLOSSARY.md
+
+ブック全体で自動リンクされる用語を定義：
+
+```markdown
+## API
+Application Programming Interface
+
+## HTML
+HyperText Markup Language
+```
+
+用語にホバーするとツールチップが表示されます。詳細は[用語集](features/glossary.md)を参照。
+
 ### LANGS.md
 
 多言語ブック用：

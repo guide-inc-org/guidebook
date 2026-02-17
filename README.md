@@ -28,8 +28,9 @@ cargo install guidebook
 ### Create and Preview a Book
 
 ```bash
-# Navigate to your book folder (with SUMMARY.md)
-cd your-book
+# Initialize a new book
+guidebook init my-book
+cd my-book
 
 # Start preview server with hot reload
 guidebook serve
@@ -58,6 +59,11 @@ guidebook update
 - **Mermaid Diagrams** - Native support for diagrams
 - **Collapsible Chapters** - Expandable sidebar navigation
 - **Full-text Search** - Built-in search functionality
+- **AsciiDoc Support** - Use `.adoc` files alongside Markdown
+- **KaTeX Math** - Render mathematical formulas
+- **Glossary** - Auto-linked term definitions with tooltips
+- **Templates** - Nunjucks/Jinja2 conditionals, loops, and filters
+- **OpenAPI / Swagger UI** - Generate API documentation
 - **Self-update** - Update with a single command
 
 ## Project Structure

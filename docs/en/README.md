@@ -15,6 +15,10 @@
 # Install
 curl -fsSL https://raw.githubusercontent.com/guide-inc-org/guidebook/main/install.sh | sh
 
+# Initialize a new book
+guidebook init my-book
+cd my-book
+
 # Preview your book
 guidebook serve
 

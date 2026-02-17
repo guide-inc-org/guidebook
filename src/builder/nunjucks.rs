@@ -167,7 +167,7 @@ fn json_to_tera_value(json: &serde_json::Value) -> tera::Value {
             if let Some(i) = n.as_i64() {
                 tera::Value::Number(i.into())
             } else if let Some(f) = n.as_f64() {
-                tera::Value::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| 0.into()).into())
+                tera::Value::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| 0.into()))
             } else {
                 tera::Value::String(n.to_string())
             }
@@ -334,10 +334,7 @@ mod tests {
     #[test]
     fn test_for_loop_with_index() {
         let mut vars = HashMap::new();
-        vars.insert(
-            "items".to_string(),
-            serde_json::json!(["A", "B", "C"]),
-        );
+        vars.insert("items".to_string(), serde_json::json!(["A", "B", "C"]));
 
         let config = create_test_config(vars);
         let content = "{% for item in book.items %}{{ loop.index }}. {{ item }}\n{% endfor %}";
@@ -422,10 +419,7 @@ mod tests {
     #[test]
     fn test_length_filter() {
         let mut vars = HashMap::new();
-        vars.insert(
-            "items".to_string(),
-            serde_json::json!(["a", "b", "c"]),
-        );
+        vars.insert("items".to_string(), serde_json::json!(["a", "b", "c"]));
 
         let config = create_test_config(vars);
         let content = "{{ book.items | length }}";

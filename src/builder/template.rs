@@ -1,5 +1,5 @@
-use crate::parser::{BookConfig, FrontMatter, Summary, SummaryItem};
 use crate::builder::TocItem;
+use crate::parser::{BookConfig, FrontMatter, Summary, SummaryItem};
 use anyhow::Result;
 use tera::{Context, Tera};
 
@@ -18,6 +18,7 @@ impl Templates {
     }
 
     /// Render a page with front matter metadata support
+    #[allow(clippy::too_many_arguments)]
     pub fn render_page_with_meta(
         &self,
         title: &str,
@@ -42,7 +43,13 @@ impl Templates {
         context.insert("collapsible", &collapsible);
 
         // Generate sidebar HTML - links need root_path prefix
-        let sidebar = generate_sidebar(&summary.items, current_path, root_path, collapsible, lang_prefix.is_some());
+        let sidebar = generate_sidebar(
+            &summary.items,
+            current_path,
+            root_path,
+            collapsible,
+            lang_prefix.is_some(),
+        );
         context.insert("sidebar", &sidebar);
 
         // Generate prev/next navigation
@@ -53,7 +60,10 @@ impl Templates {
         context.insert("next_title", &next_page.map(|(_, title)| title));
 
         // Check plugin features
-        context.insert("back_to_top", &config.is_plugin_enabled("back-to-top-button"));
+        context.insert(
+            "back_to_top",
+            &config.is_plugin_enabled("back-to-top-button"),
+        );
         context.insert("mermaid", &config.is_plugin_enabled("mermaid-md-adoc"));
         context.insert("fontsettings", &config.is_plugin_enabled("fontsettings"));
         context.insert("math", &config.math);
@@ -92,6 +102,7 @@ impl Templates {
 }
 
 /// Get the previous and next pages based on the summary order
+#[allow(clippy::type_complexity)]
 fn get_prev_next_pages(
     items: &[SummaryItem],
     current_path: Option<&str>,
@@ -122,7 +133,12 @@ fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
     let mut pages = Vec::new();
 
     for item in items {
-        if let SummaryItem::Link { title, path, children } = item {
+        if let SummaryItem::Link {
+            title,
+            path,
+            children,
+        } = item
+        {
             if let Some(md_path) = path {
                 // Remove leading slash and convert extension to .html
                 let html_path = md_path
@@ -140,14 +156,25 @@ fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
     pages
 }
 
-fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &str, collapsible: bool, is_multi_lang: bool) -> String {
+fn generate_sidebar(
+    items: &[SummaryItem],
+    current_path: Option<&str>,
+    prefix: &str,
+    collapsible: bool,
+    is_multi_lang: bool,
+) -> String {
     let mut html = String::new();
 
     for item in items {
         match item {
-            SummaryItem::Link { title, path, children } => {
+            SummaryItem::Link {
+                title,
+                path,
+                children,
+            } => {
                 // Check if this is a book-root-relative path (starts with /)
-                let is_book_root_relative = path.as_ref().map(|p| p.starts_with('/')).unwrap_or(false);
+                let is_book_root_relative =
+                    path.as_ref().map(|p| p.starts_with('/')).unwrap_or(false);
 
                 // Remove leading slash and convert extension to .html
                 let html_path = path.as_ref().map(|p| {
@@ -156,9 +183,9 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
                         .replace(".adoc", ".html")
                         .replace(".asciidoc", ".html")
                 });
-                let is_active = current_path.map(|cp| {
-                    html_path.as_ref().map(|hp| cp == hp).unwrap_or(false)
-                }).unwrap_or(false);
+                let is_active = current_path
+                    .map(|cp| html_path.as_ref().map(|hp| cp == hp).unwrap_or(false))
+                    .unwrap_or(false);
 
                 let has_children = !children.is_empty();
                 // Always expand by default. User can collapse via JS, state saved in localStorage
@@ -166,8 +193,16 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
 
                 let active_class = if is_active { " active" } else { "" };
                 // Only add expandable class if collapsible plugin is enabled
-                let expandable_class = if has_children && collapsible { " expandable" } else { "" };
-                let expanded_class = if has_children && should_expand { " expanded" } else { "" };
+                let expandable_class = if has_children && collapsible {
+                    " expandable"
+                } else {
+                    ""
+                };
+                let expanded_class = if has_children && should_expand {
+                    " expanded"
+                } else {
+                    ""
+                };
 
                 html.push_str(&format!(
                     r#"<li class="chapter{}{}{}">"#,
@@ -183,7 +218,9 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
                     };
                     html.push_str(&format!(
                         r#"<a href="{}{}">{}</a>"#,
-                        href_prefix, hp, html_escape(title)
+                        href_prefix,
+                        hp,
+                        html_escape(title)
                     ));
                 } else {
                     html.push_str(&format!(
@@ -194,7 +231,13 @@ fn generate_sidebar(items: &[SummaryItem], current_path: Option<&str>, prefix: &
 
                 if has_children {
                     html.push_str("<ul class=\"articles\">");
-                    html.push_str(&generate_sidebar(children, current_path, prefix, collapsible, is_multi_lang));
+                    html.push_str(&generate_sidebar(
+                        children,
+                        current_path,
+                        prefix,
+                        collapsible,
+                        is_multi_lang,
+                    ));
                     html.push_str("</ul>");
                 }
 

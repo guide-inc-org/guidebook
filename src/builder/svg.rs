@@ -10,12 +10,17 @@ use anyhow::Result;
 use regex::Regex;
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
+
+static WIDTH_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"width\s*=\s*["']([^"']+)["']"#).unwrap());
+static HEIGHT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"height\s*=\s*["']([^"']+)["']"#).unwrap());
 
 /// Check if an SVG is an icon (has fill="currentColor")
 /// Icon SVGs should be kept inline to preserve their dynamic color behavior
 fn is_icon_svg(svg_content: &str) -> bool {
-    svg_content.contains(r#"fill="currentColor""#)
-        || svg_content.contains(r#"fill='currentColor'"#)
+    svg_content.contains(r#"fill="currentColor""#) || svg_content.contains(r#"fill='currentColor'"#)
 }
 
 /// Generate a unique filename for an externalized SVG
@@ -77,13 +82,8 @@ pub fn externalize_inline_svg(html: &str, output_dir: &Path) -> Result<String> {
         fs::write(&svg_file_path, &svg_content)?;
 
         // Extract width and height from SVG attributes if present
-        let width_regex = Regex::new(r#"width\s*=\s*["']([^"']+)["']"#)?;
-        let height_regex = Regex::new(r#"height\s*=\s*["']([^"']+)["']"#)?;
-
-        let width = width_regex.captures(svg_attrs)
-            .map(|c| c[1].to_string());
-        let height = height_regex.captures(svg_attrs)
-            .map(|c| c[1].to_string());
+        let width = WIDTH_REGEX.captures(svg_attrs).map(|c| c[1].to_string());
+        let height = HEIGHT_REGEX.captures(svg_attrs).map(|c| c[1].to_string());
 
         // Build replacement img tag
         let mut img_tag = format!(r#"<img src="{}""#, relative_path);
@@ -152,14 +152,9 @@ pub fn inline_svg_files(html: &str, base_dir: &Path) -> Result<String> {
         }
 
         // Extract width and height from img tag attributes
-        let width_regex = Regex::new(r#"width\s*=\s*["']([^"']+)["']"#)?;
-        let height_regex = Regex::new(r#"height\s*=\s*["']([^"']+)["']"#)?;
-
         let attrs = format!("{}{}", before_src, after_src);
-        let width = width_regex.captures(&attrs)
-            .map(|c| c[1].to_string());
-        let height = height_regex.captures(&attrs)
-            .map(|c| c[1].to_string());
+        let width = WIDTH_REGEX.captures(&attrs).map(|c| c[1].to_string());
+        let height = HEIGHT_REGEX.captures(&attrs).map(|c| c[1].to_string());
 
         // Modify SVG to include width/height if specified in img tag
         let mut modified_svg = svg_content.clone();

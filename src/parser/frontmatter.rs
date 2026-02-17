@@ -85,10 +85,10 @@ pub fn parse_front_matter(content: &str) -> ParsedContent {
 
     // Skip any whitespace/newline after opening ---
     let after_opening = after_opening.trim_start_matches([' ', '\t']);
-    let after_opening = if after_opening.starts_with('\n') {
-        &after_opening[1..]
-    } else if after_opening.starts_with("\r\n") {
-        &after_opening[2..]
+    let after_opening = if let Some(rest) = after_opening.strip_prefix("\r\n") {
+        rest
+    } else if let Some(rest) = after_opening.strip_prefix('\n') {
+        rest
     } else if after_opening.is_empty() {
         after_opening
     } else {
@@ -101,10 +101,10 @@ pub fn parse_front_matter(content: &str) -> ParsedContent {
 
     // Find the closing ---
     // First, check if the content starts with --- (empty front matter case)
-    let (yaml_content, remaining) = if after_opening.starts_with("---\n") {
-        ("", &after_opening[4..])
-    } else if after_opening.starts_with("---\r\n") {
-        ("", &after_opening[5..])
+    let (yaml_content, remaining) = if let Some(rest) = after_opening.strip_prefix("---\r\n") {
+        ("", rest)
+    } else if let Some(rest) = after_opening.strip_prefix("---\n") {
+        ("", rest)
     } else if after_opening == "---" {
         ("", "")
     } else {

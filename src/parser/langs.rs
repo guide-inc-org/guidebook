@@ -26,7 +26,10 @@ pub fn parse_langs(book_dir: &Path) -> Result<Vec<Language>> {
         let line = line.trim();
 
         // Match pattern: * [Title](code/) or - [Title](code/)
-        if (line.starts_with('*') || line.starts_with('-')) && line.contains('[') && line.contains("](") {
+        if (line.starts_with('*') || line.starts_with('-'))
+            && line.contains('[')
+            && line.contains("](")
+        {
             if let Some(lang) = parse_lang_line(line) {
                 languages.push(lang);
             }

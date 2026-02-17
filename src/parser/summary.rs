@@ -103,7 +103,8 @@ pub fn parse_summary(content: &str) -> Result<Summary> {
                     } else {
                         // Nested list completed, attach as children to last item in parent
                         if let Some(parent_list) = in_list_stack.last_mut() {
-                            if let Some(SummaryItem::Link { children, .. }) = parent_list.last_mut() {
+                            if let Some(SummaryItem::Link { children, .. }) = parent_list.last_mut()
+                            {
                                 *children = completed_items;
                             }
                         }
@@ -228,13 +229,29 @@ mod tests {
         assert_eq!(summary.items.len(), 2);
 
         // Verify children structure
-        if let SummaryItem::Link { title, children, .. } = &summary.items[1] {
+        if let SummaryItem::Link {
+            title, children, ..
+        } = &summary.items[1]
+        {
             assert_eq!(title, "顧客画面");
-            assert_eq!(children.len(), 1, "顧客画面 should have 1 child (ポートフォリオ)");
+            assert_eq!(
+                children.len(),
+                1,
+                "顧客画面 should have 1 child (ポートフォリオ)"
+            );
 
-            if let SummaryItem::Link { title: child_title, children: grandchildren, .. } = &children[0] {
+            if let SummaryItem::Link {
+                title: child_title,
+                children: grandchildren,
+                ..
+            } = &children[0]
+            {
                 assert_eq!(child_title, "ポートフォリオ");
-                assert_eq!(grandchildren.len(), 2, "ポートフォリオ should have 2 children (TOP, 国内株式現物)");
+                assert_eq!(
+                    grandchildren.len(),
+                    2,
+                    "ポートフォリオ should have 2 children (TOP, 国内株式現物)"
+                );
             } else {
                 panic!("Expected Link for ポートフォリオ");
             }
@@ -260,12 +277,20 @@ mod tests {
         assert_eq!(summary.items.len(), 3, "Should have 3 top-level items");
 
         // Verify Chapter 1 has 2 children
-        if let SummaryItem::Link { title, children, .. } = &summary.items[1] {
+        if let SummaryItem::Link {
+            title, children, ..
+        } = &summary.items[1]
+        {
             assert_eq!(title, "Chapter 1");
             assert_eq!(children.len(), 2, "Chapter 1 should have 2 children");
 
             // Verify Section 1.2 has 1 child (Subsection 1.2.1)
-            if let SummaryItem::Link { title: sec_title, children: sec_children, .. } = &children[1] {
+            if let SummaryItem::Link {
+                title: sec_title,
+                children: sec_children,
+                ..
+            } = &children[1]
+            {
                 assert_eq!(sec_title, "Section 1.2");
                 assert_eq!(sec_children.len(), 1, "Section 1.2 should have 1 child");
             } else {
@@ -293,12 +318,20 @@ mod tests {
         assert_eq!(summary.items.len(), 3, "Should have 3 top-level items");
 
         // Verify Chapter 1 has 2 children
-        if let SummaryItem::Link { title, children, .. } = &summary.items[1] {
+        if let SummaryItem::Link {
+            title, children, ..
+        } = &summary.items[1]
+        {
             assert_eq!(title, "Chapter 1");
             assert_eq!(children.len(), 2, "Chapter 1 should have 2 children");
 
             // Verify Section 1.2 has 1 child (Subsection 1.2.1)
-            if let SummaryItem::Link { title: sec_title, children: sec_children, .. } = &children[1] {
+            if let SummaryItem::Link {
+                title: sec_title,
+                children: sec_children,
+                ..
+            } = &children[1]
+            {
                 assert_eq!(sec_title, "Section 1.2");
                 assert_eq!(sec_children.len(), 1, "Section 1.2 should have 1 child");
             } else {
@@ -325,7 +358,10 @@ mod tests {
         assert_eq!(summary.items.len(), 2, "Should have 2 top-level items");
 
         // Verify Item 1 has 1 child
-        if let SummaryItem::Link { title, children, .. } = &summary.items[0] {
+        if let SummaryItem::Link {
+            title, children, ..
+        } = &summary.items[0]
+        {
             assert_eq!(title, "Item 1");
             assert_eq!(children.len(), 1, "Item 1 should have 1 child");
         } else {
@@ -333,7 +369,10 @@ mod tests {
         }
 
         // Verify Item 2 has 1 child
-        if let SummaryItem::Link { title, children, .. } = &summary.items[1] {
+        if let SummaryItem::Link {
+            title, children, ..
+        } = &summary.items[1]
+        {
             assert_eq!(title, "Item 2");
             assert_eq!(children.len(), 1, "Item 2 should have 1 child");
         } else {
@@ -344,14 +383,22 @@ mod tests {
     #[test]
     fn test_parse_tab_indent() {
         // Test tab indentation
-        let content = "# Summary\n\n* [Item 1](item1.md)\n\t* [Item 1.1](item1-1.md)\n* [Item 2](item2.md)\n";
+        let content =
+            "# Summary\n\n* [Item 1](item1.md)\n\t* [Item 1.1](item1-1.md)\n* [Item 2](item2.md)\n";
 
         let summary = parse_summary(content).unwrap();
         assert_eq!(summary.items.len(), 2, "Should have 2 top-level items");
 
-        if let SummaryItem::Link { title, children, .. } = &summary.items[0] {
+        if let SummaryItem::Link {
+            title, children, ..
+        } = &summary.items[0]
+        {
             assert_eq!(title, "Item 1");
-            assert_eq!(children.len(), 1, "Item 1 should have 1 child (tab-indented)");
+            assert_eq!(
+                children.len(),
+                1,
+                "Item 1 should have 1 child (tab-indented)"
+            );
         } else {
             panic!("Expected Link for Item 1");
         }
@@ -379,10 +426,18 @@ mod tests {
             assert_eq!(path.as_deref(), Some("chapter2.md"), "./ should be removed");
         }
         if let SummaryItem::Link { path, .. } = &summary.items[2] {
-            assert_eq!(path.as_deref(), Some("/chapter3.md"), "Leading / should be preserved for root-relative paths");
+            assert_eq!(
+                path.as_deref(),
+                Some("/chapter3.md"),
+                "Leading / should be preserved for root-relative paths"
+            );
         }
         if let SummaryItem::Link { path, .. } = &summary.items[3] {
-            assert_eq!(path.as_deref(), Some("/dir/chapter4.md"), "Leading / should be preserved for root-relative paths");
+            assert_eq!(
+                path.as_deref(),
+                Some("/dir/chapter4.md"),
+                "Leading / should be preserved for root-relative paths"
+            );
         }
     }
 }

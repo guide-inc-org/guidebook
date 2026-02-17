@@ -140,7 +140,10 @@ mod tests {
         assert_eq!(config.title, "Test Book");
         assert!(config.is_plugin_enabled("back-to-top-button"));
         assert!(!config.is_plugin_enabled("search")); // Explicitly disabled with "-search"
-        assert_eq!(config.get_website_style(), Some(&"styles/website.css".to_string()));
+        assert_eq!(
+            config.get_website_style(),
+            Some(&"styles/website.css".to_string())
+        );
     }
 
     #[test]

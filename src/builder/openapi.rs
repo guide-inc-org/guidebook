@@ -58,7 +58,10 @@ fn generate_single_swagger_ui(
     fs::copy(&src_swagger, &dest_swagger)
         .with_context(|| format!("Failed to copy {} to {}/", openapi_path, output_dir))?;
 
-    println!("  Copied {} to {}/{}", openapi_path, output_dir, swagger_filename);
+    println!(
+        "  Copied {} to {}/{}",
+        openapi_path, output_dir, swagger_filename
+    );
 
     // Generate index.html with Swagger UI
     let html = generate_swagger_html(swagger_filename);

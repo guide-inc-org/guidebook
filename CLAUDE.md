@@ -69,21 +69,25 @@ cargo publish
 
 ```
 src/
-├── main.rs          # CLI entry point
+├── main.rs              # CLI entry point, dev server, self-update
 ├── builder/
-│   ├── mod.rs       # Build process
-│   ├── renderer.rs  # Markdown to HTML conversion
-│   └── template.rs  # HTML template
+│   ├── mod.rs           # Build orchestration
+│   ├── renderer.rs      # Markdown/AsciiDoc to HTML
+│   ├── template.rs      # Tera HTML templates
+│   ├── images.rs        # Remote image downloading
+│   ├── svg.rs           # SVG optimization
+│   ├── nunjucks.rs      # Nunjucks template processing
+│   ├── sitemap.rs       # Sitemap directives
+│   └── openapi.rs       # Swagger UI generation
 ├── parser/
-│   ├── mod.rs
-│   ├── book_config.rs  # book.json parser
-│   ├── langs.rs        # LANGS.md parser (multi-language support)
-│   └── summary.rs      # SUMMARY.md parser
-templates/
-├── gitbook.css      # Stylesheet
-├── gitbook.js       # Client-side JS
-├── collapsible.js   # Collapsible sections
-└── search.js        # Search functionality
+│   ├── mod.rs           # Parser module exports
+│   ├── book_config.rs   # book.json parser
+│   ├── frontmatter.rs   # YAML front matter extraction
+│   ├── glossary.rs      # Glossary term definitions
+│   ├── langs.rs         # LANGS.md parser (multi-language support)
+│   └── summary.rs       # SUMMARY.md parser
+templates/               # Embedded static assets (CSS/JS)
+tests/                   # Integration tests
 ```
 
 ## Important Design Decisions

@@ -2,6 +2,7 @@
     "title": "guidebook Documentation",
     "plugins": [
         "collapsible-chapters",
-        "back-to-top-button"
+        "back-to-top-button",
+        "mermaid-md-adoc"
     ]
 }

@@ -44,6 +44,20 @@ The introduction page, becomes `index.html`.
 
 Configuration file. See [Configuration](config.md).
 
+### GLOSSARY.md
+
+Define terms that are automatically linked throughout your book:
+
+```markdown
+## API
+Application Programming Interface
+
+## HTML
+HyperText Markup Language
+```
+
+Terms appear as tooltips when hovered. See [Glossary](features/glossary.md).
+
 ### LANGS.md
 
 For multi-language books:

@@ -1,8 +1,27 @@
 # Bắt đầu nhanh
 
-## Tạo sách mới
+## Khởi tạo sách mới
 
-Tạo thư mục với cấu trúc sau:
+Cách nhanh nhất để bắt đầu:
+
+```bash
+guidebook init my-book
+```
+
+Lệnh này tạo ra:
+
+```
+my-book/
+├── book.json       # Cấu hình
+├── README.md       # Giới thiệu (trở thành index.html)
+└── SUMMARY.md      # Mục lục
+```
+
+Chỉnh sửa `SUMMARY.md` để thêm chương, sau đó bắt đầu viết.
+
+## Thiết lập thủ công
+
+Hoặc tạo cấu trúc thủ công:
 
 ```
 my-book/

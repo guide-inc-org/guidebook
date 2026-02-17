@@ -15,6 +15,10 @@
 # Cài đặt
 curl -fsSL https://raw.githubusercontent.com/guide-inc-org/guidebook/main/install.sh | sh
 
+# Khởi tạo sách mới
+guidebook init my-book
+cd my-book
+
 # Xem trước
 guidebook serve
 
