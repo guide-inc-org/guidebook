@@ -100,6 +100,14 @@ guidebook serve
 
 No configuration changes required.
 
+## Security
+
+- **Dev server**: Path traversal protection blocks `..` access and symlink escapes
+- **Image downloads**: 50 MB size limit with streaming enforcement (aborts mid-download)
+- **Self-update**: SHA256 checksum verification is mandatory; unverified binaries are refused
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#security-model) for details.
+
 ## Feedback
 
 Found a bug? Have a feature request?

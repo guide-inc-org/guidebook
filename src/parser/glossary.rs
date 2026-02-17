@@ -491,4 +491,75 @@ Representational State Transfer
         assert!(result
             .contains(r#"<span class="glossary-term" data-definition="Interface">API</span>."#));
     }
+
+    // ── Fuzz-like edge case tests ──
+
+    #[test]
+    fn test_fuzz_empty_glossary_content() {
+        let result = Glossary::parse("");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_fuzz_heading_only_no_definition() {
+        let result = Glossary::parse("## TermWithNoDefinition\n");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fuzz_special_chars_in_term() {
+        let inputs = vec![
+            "## C++\nLanguage",
+            "## C#\nLanguage",
+            "## .NET\nFramework",
+            "## $variable\nShell variable",
+            "## term<script>\nXSS attempt",
+        ];
+        for input in inputs {
+            let result = Glossary::parse(input);
+            assert!(result.is_ok(), "Should not panic on: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_fuzz_apply_glossary_empty_html() {
+        let glossary = Glossary::parse("## API\nInterface").unwrap();
+        let result = apply_glossary("", &glossary);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_fuzz_apply_glossary_malformed_html() {
+        let glossary = Glossary::parse("## API\nInterface").unwrap();
+        let inputs = vec![
+            "<p>Unclosed tag with API",
+            "<<>>API<<>>",
+            "<p>API</p><p>API</p><p>API</p>",
+            "<div style='color:red'>API</div>",
+        ];
+        for input in inputs {
+            let result = apply_glossary(input, &glossary);
+            let _ = result; // Should not panic
+        }
+    }
+
+    #[test]
+    fn test_fuzz_very_long_term() {
+        let term = "A".repeat(10000);
+        let content = format!("## {}\nDefinition", term);
+        let result = Glossary::parse(&content);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fuzz_many_terms() {
+        let mut content = String::from("# Glossary\n\n");
+        for i in 0..500 {
+            content.push_str(&format!("## Term{}\nDefinition {}\n\n", i, i));
+        }
+        let result = Glossary::parse(&content);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().entries.len(), 500);
+    }
 }

@@ -47,3 +47,33 @@ jobs:
 
       - name: Run security audit
         run: cargo audit
+
+      - name: Check for known vulnerabilities in Cargo.lock
+        run: cargo audit --deny warnings
+
+  fuzz:
+    name: Fuzz Parsers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build
+
+      - name: Fuzz SUMMARY.md parser
+        run: cargo test --lib -- parser::summary::tests --nocapture
+
+      - name: Fuzz frontmatter parser
+        run: cargo test --lib -- parser::frontmatter::tests --nocapture
+
+      - name: Fuzz glossary parser
+        run: cargo test --lib -- parser::glossary::tests --nocapture
+
+      - name: Run security-specific tests
+        run: cargo test --test security_test

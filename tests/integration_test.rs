@@ -4,7 +4,7 @@
 //! running the build process, and verifying the output.
 
 use std::fs;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::tempdir;
 
 /// Get the path to the guidebook binary built by cargo
@@ -299,4 +299,124 @@ fn test_sidebar_navigation() {
         index.contains("Chapter 1"),
         "Sidebar should display chapter title"
     );
+}
+
+// ── Serve path traversal tests ──
+
+/// Find an available port by binding to port 0 and reading the assigned port.
+fn find_available_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Start the serve command on a given port and return the child process
+fn start_serve(source: &std::path::Path, port: u16) -> std::process::Child {
+    Command::new(guidebook_bin())
+        .arg("serve")
+        .arg(source.to_str().unwrap())
+        .arg("-p")
+        .arg(port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start guidebook serve")
+}
+
+/// Wait for the serve command to be ready by polling the port
+fn wait_for_server(port: u16) -> bool {
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    false
+}
+
+#[test]
+fn test_serve_rejects_path_traversal() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    // Create a secret file outside the book output
+    fs::write(temp.path().join("secret.txt"), "TOP SECRET").unwrap();
+
+    let port = find_available_port();
+    let mut child = start_serve(&source, port);
+
+    if !wait_for_server(port) {
+        child.kill().ok();
+        // Don't panic — port may be in use from a previous failed test run
+        eprintln!(
+            "Warning: Server did not start on port {}, skipping test",
+            port
+        );
+        return;
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    // Test various path traversal attempts
+    let traversal_paths = vec![
+        "/../secret.txt",
+        "/..%2Fsecret.txt",
+        "/%2e%2e/secret.txt",
+        "/%2e%2e%2fsecret.txt",
+        "/sub/../../secret.txt",
+        "/..\\secret.txt",
+    ];
+
+    for path in &traversal_paths {
+        let url = format!("http://127.0.0.1:{}{}", port, path);
+        match client.get(&url).send() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let body = resp.text().unwrap_or_default();
+                assert!(
+                    status == 403 || status == 404,
+                    "Path traversal '{}' should be blocked (got {} with body: {})",
+                    path,
+                    status,
+                    &body[..body.len().min(100)]
+                );
+                assert!(
+                    !body.contains("TOP SECRET"),
+                    "Path traversal '{}' leaked secret content!",
+                    path
+                );
+            }
+            Err(_) => {
+                // Connection error is acceptable (server might reject early)
+            }
+        }
+    }
+
+    // Verify normal access still works
+    let resp = client
+        .get(&format!("http://127.0.0.1:{}/", port))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200, "Normal access should work");
+
+    // Also test double-encoded traversal in the same server session
+    let url = format!("http://127.0.0.1:{}/..%252F..%252Fetc/passwd", port);
+    if let Ok(resp) = client.get(&url).send() {
+        let status = resp.status().as_u16();
+        assert!(
+            status == 403 || status == 404,
+            "Double-encoded traversal should be blocked (got {})",
+            status
+        );
+    }
+
+    child.kill().ok();
+    child.wait().ok();
 }

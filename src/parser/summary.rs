@@ -440,4 +440,68 @@ mod tests {
             );
         }
     }
+
+    // ── Fuzz-like edge case tests ──
+
+    #[test]
+    fn test_fuzz_empty_input() {
+        let result = parse_summary("");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fuzz_only_whitespace() {
+        let result = parse_summary("   \n\n\t\t\n   ");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fuzz_only_heading() {
+        let result = parse_summary("# Summary");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fuzz_broken_links() {
+        let inputs = vec![
+            "* []()",
+            "* [title]()",
+            "* [](path.md)",
+            "* [broken",
+            "* broken](link.md)",
+            "* [link](path with spaces.md)",
+            "* [](javascript:alert(1))",
+            "* [🎉](emoji.md)",
+        ];
+        for input in inputs {
+            let result = parse_summary(input);
+            assert!(result.is_ok(), "Should not panic on: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_fuzz_deep_nesting() {
+        let mut content = String::from("# Summary\n");
+        for i in 0..20 {
+            let indent = "  ".repeat(i);
+            content.push_str(&format!("{}* [Level {}](l{}.md)\n", indent, i, i));
+        }
+        let result = parse_summary(&content);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fuzz_null_bytes() {
+        let content = "# Summary\n* [Test\0](file\0.md)\n";
+        let result = parse_summary(content);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fuzz_very_long_line() {
+        let long_title = "A".repeat(10000);
+        let content = format!("* [{}](test.md)\n", long_title);
+        let result = parse_summary(&content);
+        assert!(result.is_ok());
+    }
 }

@@ -15,7 +15,7 @@ Tải phiên bản mới nhất từ GitHub và thay thế binary hiện tại.
 1. Kiểm tra phiên bản mới nhất trên GitHub
 2. So sánh với phiên bản hiện tại
 3. Tải binary phù hợp cho platform (macOS, Linux, hoặc Windows)
-4. Xác minh checksum SHA256 (nếu có trong release)
+4. Xác minh checksum SHA256 (bắt buộc — từ chối cập nhật nếu thiếu)
 5. Thay thế binary hiện tại
 
 ## Hỗ trợ platform

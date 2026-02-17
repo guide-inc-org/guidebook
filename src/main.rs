@@ -272,15 +272,22 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
         let decoded_path = percent_decode_str(&url_path)
             .decode_utf8_lossy()
             .to_string();
+
+        // Path traversal protection: reject any path containing ".." components
+        // This catches encoded variants (..%2F, %2e%2e, etc.) after URL decoding
+        if decoded_path.contains("..") {
+            let response = Response::from_string("403 Forbidden").with_status_code(403);
+            let _ = request.respond(response);
+            continue;
+        }
+
         let file_path = temp_dir.join(decoded_path.trim_start_matches('/'));
 
-        // Path traversal protection: ensure resolved path stays within temp_dir
-        if let Ok(canonical) = file_path.canonicalize() {
-            if !canonical.starts_with(&temp_dir) {
-                let response = Response::from_string("403 Forbidden").with_status_code(403);
-                let _ = request.respond(response);
-                continue;
-            }
+        // Belt-and-suspenders: canonicalize check ensures we never serve outside temp_dir
+        if !is_safe_path(&file_path, &temp_dir) {
+            let response = Response::from_string("403 Forbidden").with_status_code(403);
+            let _ = request.respond(response);
+            continue;
         }
 
         if file_path.exists() && file_path.is_file() {
@@ -329,9 +336,16 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
             let response = Response::from_data(content).with_header(header);
             let _ = request.respond(response);
         } else {
-            // Try with .html extension
+            // Try with .html extension (same traversal protection applies)
             let html_path = format!("{}.html", file_path.display());
             let html_path = PathBuf::from(&html_path);
+
+            if !is_safe_path(&html_path, &temp_dir) {
+                let response = Response::from_string("403 Forbidden").with_status_code(403);
+                let _ = request.respond(response);
+                continue;
+            }
+
             if html_path.exists() {
                 let content = match fs::read(&html_path) {
                     Ok(c) => c,
@@ -356,6 +370,28 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check that a path is safely contained within the allowed root directory.
+/// Uses canonicalize for existing files, and component-level validation for all paths.
+fn is_safe_path(path: &Path, root: &Path) -> bool {
+    // If the file exists, use canonicalize for the strongest guarantee
+    if let Ok(canonical) = path.canonicalize() {
+        if let Ok(canonical_root) = root.canonicalize() {
+            return canonical.starts_with(&canonical_root);
+        }
+    }
+
+    // For non-existent files, validate by checking each path component
+    // Reject any ".." component to prevent traversal
+    for component in path.components() {
+        if let std::path::Component::ParentDir = component {
+            return false;
+        }
+    }
+
+    // Verify the joined path lexically starts with root
+    path.starts_with(root)
 }
 
 fn get_content_type(path: &Path) -> &'static str {
@@ -459,21 +495,26 @@ fn update_self() -> Result<()> {
     let mut bytes = Vec::new();
     response.into_reader().read_to_end(&mut bytes)?;
 
-    // Verify SHA256 checksum if available in release body
-    if let Some(expected_hash) = extract_checksum(&release_body, artifact_name) {
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let actual_hash = format!("{:x}", hasher.finalize());
-        if actual_hash != expected_hash {
-            return Err(anyhow::anyhow!(
-                "Checksum mismatch!\n  Expected: {}\n  Actual:   {}\nDownload may be corrupted or tampered with.",
-                expected_hash, actual_hash
-            ));
-        }
-        println!("  Checksum verified ✓");
-    } else {
-        eprintln!("  Warning: No checksum found in release notes, skipping verification");
+    // Verify SHA256 checksum (required — refuse to install without verification)
+    let expected_hash = extract_checksum(&release_body, artifact_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "No SHA256 checksum found in release notes for {}.\n\
+             Refusing to install unverified binary.\n\
+             Release maintainers: include checksums in the format:\n  \
+             <sha256hash>  <filename>",
+            artifact_name
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual_hash = format!("{:x}", hasher.finalize());
+    if actual_hash != expected_hash {
+        return Err(anyhow::anyhow!(
+            "Checksum mismatch!\n  Expected: {}\n  Actual:   {}\nDownload may be corrupted or tampered with.",
+            expected_hash, actual_hash
+        ));
     }
+    println!("  Checksum verified ✓");
 
     // Get current executable path
     let current_exe = std::env::current_exe()?;
@@ -614,4 +655,102 @@ fn extract_zip(data: &[u8]) -> Result<Vec<u8>> {
     }
 
     Err(anyhow::anyhow!("Binary not found in archive"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // ── is_safe_path tests ──
+
+    #[test]
+    fn test_safe_path_normal() {
+        let root = tempdir().unwrap();
+        let file = root.path().join("index.html");
+        fs::write(&file, "ok").unwrap();
+        assert!(is_safe_path(&file, root.path()));
+    }
+
+    #[test]
+    fn test_safe_path_rejects_dotdot() {
+        let root = tempdir().unwrap();
+        let evil = root.path().join("..").join("etc").join("passwd");
+        assert!(!is_safe_path(&evil, root.path()));
+    }
+
+    #[test]
+    fn test_safe_path_rejects_symlink_escape() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        fs::write(&secret, "secret").unwrap();
+
+        // Create symlink inside root pointing outside
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&secret, root.path().join("link.txt")).unwrap();
+            assert!(!is_safe_path(&root.path().join("link.txt"), root.path()));
+        }
+    }
+
+    #[test]
+    fn test_safe_path_nonexistent_file() {
+        let root = tempdir().unwrap();
+        // A normal non-existent file inside root should be safe
+        assert!(is_safe_path(
+            &root.path().join("nonexistent.html"),
+            root.path()
+        ));
+    }
+
+    #[test]
+    fn test_safe_path_rejects_dotdot_nonexistent() {
+        let root = tempdir().unwrap();
+        let evil = root.path().join("sub").join("..").join("..").join("out");
+        assert!(!is_safe_path(&evil, root.path()));
+    }
+
+    // ── extract_checksum tests ──
+
+    #[test]
+    fn test_extract_checksum_found() {
+        // SHA256 hash is exactly 64 hex chars
+        let hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        let body = format!("## Checksums\n\n{}  guidebook-linux-x86_64.tar.gz\n", hash);
+        let result = extract_checksum(&body, "guidebook-linux-x86_64.tar.gz");
+        assert_eq!(result, Some(hash.to_string()));
+    }
+
+    #[test]
+    fn test_extract_checksum_missing() {
+        let body = "## Release Notes\n\nSome notes here.\n";
+        let result = extract_checksum(body, "guidebook-linux-x86_64.tar.gz");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_checksum_wrong_artifact() {
+        let body =
+            "abc123def456abc123def456abc123def456abc123def456abc123def456abc123de  guidebook-darwin-arm64.tar.gz\n";
+        let result = extract_checksum(body, "guidebook-linux-x86_64.tar.gz");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_checksum_invalid_hash_length() {
+        let body = "abc123  guidebook-linux-x86_64.tar.gz\n";
+        let result = extract_checksum(body, "guidebook-linux-x86_64.tar.gz");
+        assert_eq!(result, None);
+    }
+
+    // ── is_newer_version tests ──
+
+    #[test]
+    fn test_is_newer_version() {
+        assert!(is_newer_version("1.1.0", "1.0.0"));
+        assert!(is_newer_version("2.0.0", "1.9.9"));
+        assert!(!is_newer_version("1.0.0", "1.0.0"));
+        assert!(!is_newer_version("0.9.0", "1.0.0"));
+    }
 }

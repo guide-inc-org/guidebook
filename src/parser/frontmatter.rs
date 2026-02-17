@@ -299,4 +299,56 @@ description: Japanese description
         assert_eq!(fm.title.as_deref(), Some("Japanese Title"));
         assert_eq!(fm.description.as_deref(), Some("Japanese description"));
     }
+
+    // ── Fuzz-like edge case tests ──
+
+    #[test]
+    fn test_fuzz_empty_input() {
+        let parsed = parse_front_matter("");
+        assert!(parsed.front_matter.is_none());
+    }
+
+    #[test]
+    fn test_fuzz_only_delimiters() {
+        let parsed = parse_front_matter("---\n---");
+        assert!(parsed.front_matter.is_some());
+    }
+
+    #[test]
+    fn test_fuzz_triple_delimiters() {
+        let parsed = parse_front_matter("---\ntitle: A\n---\n---\ntitle: B\n---");
+        // Only the first front matter block should be parsed
+        assert!(parsed.front_matter.is_some());
+    }
+
+    #[test]
+    fn test_fuzz_binary_in_yaml() {
+        let content = "---\ntitle: \x00\x01\x7f\n---\nContent";
+        let parsed = parse_front_matter(content);
+        // Should not panic, may or may not parse
+        let _ = parsed;
+    }
+
+    #[test]
+    fn test_fuzz_very_long_yaml() {
+        let title = "T".repeat(100_000);
+        let content = format!("---\ntitle: {}\n---\nContent", title);
+        let parsed = parse_front_matter(&content);
+        assert!(parsed.front_matter.is_some());
+    }
+
+    #[test]
+    fn test_fuzz_nested_yaml() {
+        let content = "---\ntitle:\n  nested:\n    deep: value\n---\nContent";
+        let parsed = parse_front_matter(content);
+        // Should handle nested YAML without panic
+        let _ = parsed;
+    }
+
+    #[test]
+    fn test_fuzz_yaml_with_special_chars() {
+        let content = "---\ntitle: \"quote: \\\"escaped\\\"\"\ndescription: 'single: \\'quoted\\''\n---\nContent";
+        let parsed = parse_front_matter(content);
+        let _ = parsed;
+    }
 }

@@ -82,6 +82,45 @@ tests/                   # Integration tests
 5. Commit your changes
 6. Push and open a Pull Request
 
+## Security Model
+
+### Dev Server (`guidebook serve`)
+
+The dev server enforces strict path containment:
+
+- **Rejected inputs**: Any URL path containing `..` after URL decoding is rejected with `403 Forbidden`
+- **Path validation**: Both direct file access and `.html` fallback paths are validated via `canonicalize()` + `starts_with()` to ensure they resolve within the temporary build directory
+- **Symlink protection**: Symlinks that resolve outside the build directory are blocked
+- **Defense in depth**: Three layers — URL-level `..` rejection, component-level `ParentDir` check, and filesystem-level `canonicalize()` verification
+
+### Remote Image Downloading (`fetchRemoteImages`)
+
+- **Size limit**: 50 MB per image (`MAX_IMAGE_SIZE`)
+- **Content-Length pre-check**: If the server advertises `Content-Length` exceeding the limit, the download is rejected before any data is read
+- **Streaming enforcement**: The response body is read in 8 KB chunks; if the cumulative size exceeds the limit mid-stream, the download is aborted immediately
+- **No full buffering**: The entire response is never loaded into memory at once before size validation
+
+### Self-Update (`guidebook update`)
+
+Trust model:
+
+- **Source**: Downloads from `https://github.com/guide-inc-org/guidebook/releases/` only
+- **Checksum required**: SHA256 checksum verification is mandatory. If the release notes do not contain a checksum for the downloaded artifact, the update is refused
+- **Checksum format**: Release notes must include lines in the format: `<sha256hash>  <filename>` (64 hex chars, two spaces, filename)
+- **No bypass**: There is no `--skip-verify` flag or equivalent. Unverified binaries are never installed
+
+### Rejected Input Summary
+
+| Component | Input | Response |
+|-----------|-------|----------|
+| `serve` | URL with `..` (raw or encoded) | `403 Forbidden` |
+| `serve` | Path resolving outside build dir | `403 Forbidden` |
+| `serve` | Symlink escaping build dir | `403 Forbidden` |
+| `images` | Image > 50 MB (Content-Length) | Error, skip image |
+| `images` | Image > 50 MB (streaming) | Abort mid-download |
+| `update` | Release without checksum | Error, refuse update |
+| `update` | Checksum mismatch | Error, refuse update |
+
 ## Release Process
 
 1. Update version in `Cargo.toml`
@@ -91,3 +130,4 @@ tests/                   # Integration tests
 5. Create and push a tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
 6. GitHub Actions builds multi-platform binaries automatically
 7. Optionally publish to crates.io: `cargo publish`
+8. **Important**: Include SHA256 checksums in the release notes for all binary artifacts

@@ -97,8 +97,11 @@ impl ImageDownloader {
         Ok(result)
     }
 
-    /// Download an image from a URL and return the local path
+    /// Download an image from a URL and return the local path.
+    /// Uses streaming download with Content-Length pre-check and in-flight size limit.
     fn download_image(&mut self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+        use std::io::Read;
+
         // Check cache first
         if let Some(cached_path) = self.cache.get(url) {
             return Ok(cached_path.clone());
@@ -114,16 +117,38 @@ impl ImageDownloader {
             return Err(format!("HTTP {}", response.status()).into());
         }
 
-        let bytes = response.bytes()?;
+        // Pre-check Content-Length header if present
+        if let Some(content_length) = response.content_length() {
+            if content_length as usize > MAX_IMAGE_SIZE {
+                return Err(format!(
+                    "Image too large (Content-Length: {:.1} MB, max {} MB)",
+                    content_length as f64 / 1024.0 / 1024.0,
+                    MAX_IMAGE_SIZE / 1024 / 1024
+                )
+                .into());
+            }
+        }
 
-        // Check image size limit
-        if bytes.len() > MAX_IMAGE_SIZE {
-            return Err(format!(
-                "Image too large ({:.1} MB, max {} MB)",
-                bytes.len() as f64 / 1024.0 / 1024.0,
-                MAX_IMAGE_SIZE / 1024 / 1024
-            )
-            .into());
+        // Stream the response body in chunks with size limit enforcement
+        // Read up to MAX_IMAGE_SIZE+1 bytes; if we get more, the image is too large
+        let mut bytes = Vec::new();
+        let mut total_read: usize = 0;
+        let mut buf = [0u8; 8192];
+        let mut reader = response;
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            total_read += n;
+            if total_read > MAX_IMAGE_SIZE {
+                return Err(format!(
+                    "Image too large (>{} MB, download aborted mid-stream)",
+                    MAX_IMAGE_SIZE / 1024 / 1024
+                )
+                .into());
+            }
+            bytes.extend_from_slice(&buf[..n]);
         }
 
         // Generate filename from URL hash + detected extension
@@ -290,6 +315,19 @@ mod tests {
     }
 
     #[test]
+    fn test_max_image_size_is_50mb() {
+        assert_eq!(MAX_IMAGE_SIZE, 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_image_downloader_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloader = ImageDownloader::new(temp.path());
+        assert_eq!(downloader.stats(), (0, 0));
+        assert_eq!(downloader.images_dir, temp.path().join("_remote_images"));
+    }
+
+    #[test]
     fn test_detect_extension_default() {
         let empty: &[u8] = &[];
         // Unknown extension should default to png
@@ -298,5 +336,97 @@ mod tests {
             detect_extension("https://example.com/image.xyz", empty),
             "png"
         );
+    }
+
+    /// Test that Content-Length pre-check rejects images larger than MAX_IMAGE_SIZE.
+    /// Uses a raw TCP server to send a response with a faked Content-Length header,
+    /// since tiny_http auto-sets Content-Length to the actual body size.
+    #[test]
+    fn test_download_rejects_oversized_content_length() {
+        use std::io::Write;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind test server");
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{}/large.png", port);
+
+        // Spawn a thread that sends a raw HTTP response with inflated Content-Length
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Read the request (discard)
+                let mut buf = [0u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+
+                // Send response with Content-Length > MAX_IMAGE_SIZE but tiny body
+                let fake_len = MAX_IMAGE_SIZE + 1;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: image/png\r\n\r\nfake",
+                    fake_len
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut downloader = ImageDownloader::new(temp.path());
+        let result = downloader.download_image(&url);
+
+        assert!(
+            result.is_err(),
+            "Should reject image exceeding MAX_IMAGE_SIZE"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too large"),
+            "Error should mention 'too large', got: {}",
+            err
+        );
+
+        handle.join().ok();
+    }
+
+    /// Test that streaming abort works when Content-Length is absent but body exceeds limit.
+    /// Uses a local tiny_http server that streams data without Content-Length.
+    #[test]
+    fn test_download_aborts_oversized_stream() {
+        use std::sync::Arc;
+
+        let server = Arc::new(
+            tiny_http::Server::http("127.0.0.1:0").expect("Failed to start test HTTP server"),
+        );
+        let addr = server.server_addr().to_ip().unwrap();
+        let url = format!("http://127.0.0.1:{}/stream.bin", addr.port());
+
+        // Spawn a thread that sends slightly more than MAX_IMAGE_SIZE via chunked transfer
+        let server_clone = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
+            if let Some(request) = server_clone.recv().ok() {
+                // Send a body slightly larger than MAX_IMAGE_SIZE using chunked encoding.
+                // tiny_http doesn't support true streaming, so we create a large Vec.
+                // We only need MAX_IMAGE_SIZE + 1 bytes to trigger the abort.
+                let body = vec![0u8; MAX_IMAGE_SIZE + 8192];
+                let response = tiny_http::Response::from_data(body).with_status_code(200);
+                // The client may close the connection early — ignore the error.
+                let _ = request.respond(response);
+            }
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut downloader = ImageDownloader::new(temp.path());
+        let result = downloader.download_image(&url);
+
+        assert!(
+            result.is_err(),
+            "Should abort download when stream exceeds MAX_IMAGE_SIZE"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too large") || err.contains("aborted"),
+            "Error should mention 'too large' or 'aborted', got: {}",
+            err
+        );
+
+        handle.join().ok();
     }
 }
