@@ -142,8 +142,9 @@ This file serves as your book's introduction or preface.
 }
 
 fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
-    // Build to temp directory
-    let temp_dir = std::env::temp_dir().join("guidebook-serve");
+    // Build to a unique temp directory (include PID to avoid conflicts with parallel runs)
+    let temp_dir =
+        std::env::temp_dir().join(format!("guidebook-serve-{}", std::process::id()));
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir)?;
     }
