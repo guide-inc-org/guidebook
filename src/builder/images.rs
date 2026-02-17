@@ -160,10 +160,8 @@ impl ImageDownloader {
         // Write the file
         fs::write(&file_path, &bytes)?;
 
-        // Calculate relative path from output root
+        // Calculate relative path from output root (cache AFTER successful write)
         let relative_path = format!("_remote_images/{}", filename);
-
-        // Cache the result
         self.cache.insert(url.to_string(), relative_path.clone());
 
         Ok(relative_path)
@@ -428,5 +426,64 @@ mod tests {
         );
 
         handle.join().ok();
+    }
+
+    /// Test that HTTP redirects are followed when downloading images.
+    #[test]
+    fn test_download_follows_redirect() {
+        use std::sync::Arc;
+
+        // Server 1: redirects to Server 2
+        let server2 =
+            Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("Failed to start server2"));
+        let addr2 = server2.server_addr().to_ip().unwrap();
+
+        // Spawn server2: serves actual image data
+        let server2_clone = Arc::clone(&server2);
+        let handle2 = std::thread::spawn(move || {
+            if let Some(request) = server2_clone.recv().ok() {
+                // Return a minimal 1x1 PNG
+                let png: &[u8] = &[
+                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG header
+                    0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+                ];
+                let response = tiny_http::Response::from_data(png.to_vec()).with_status_code(200);
+                let _ = request.respond(response);
+            }
+        });
+
+        // Server 1: issues a 301 redirect to server2
+        let server1 =
+            Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("Failed to start server1"));
+        let addr1 = server1.server_addr().to_ip().unwrap();
+        let redirect_target = format!("http://127.0.0.1:{}/image.png", addr2.port());
+
+        let server1_clone = Arc::clone(&server1);
+        let handle1 = std::thread::spawn(move || {
+            if let Some(request) = server1_clone.recv().ok() {
+                let header =
+                    tiny_http::Header::from_bytes(b"Location" as &[u8], redirect_target.as_bytes())
+                        .unwrap();
+                let response = tiny_http::Response::from_string("Moved")
+                    .with_status_code(301)
+                    .with_header(header);
+                let _ = request.respond(response);
+            }
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut downloader = ImageDownloader::new(temp.path());
+        let url = format!("http://127.0.0.1:{}/old.png", addr1.port());
+        let result = downloader.download_image(&url);
+
+        // reqwest follows redirects by default, so this should succeed
+        assert!(
+            result.is_ok(),
+            "Redirect should be followed, got: {:?}",
+            result.err()
+        );
+
+        handle1.join().ok();
+        handle2.join().ok();
     }
 }

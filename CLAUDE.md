@@ -155,6 +155,15 @@ guidebook update
 
 ## Changelog
 
+- **2026-02-17 v0.1.65:** Security hardening (path traversal 3-layer defense, streaming image DL, mandatory update checksum), 172 tests, CI audit/fuzz, 3-language docs
+- **2026-02-06 v0.1.64:** Fix search after SPA navigation with absolute base URL
+- **2026-02-05 v0.1.63:** Sitemap directive, sidebar auto-scroll, UI fixes
+- **2026-01-28 v0.1.55:** OpenAPI/Swagger UI support, relative link resolution overhaul
+- **2026-01-15 v0.1.49:** Duplicate keys in book.json, full reference link in footnotes
+- **2026-01-10 v0.1.46:** AsciiDoc, KaTeX math, remote image downloading, SVG processing, symlink asset copy
+- **2025-12-30 v0.1.40:** HonKit compatibility (fontsettings, accordion, mobile layout, highlight.js)
+- **2025-12-28 v0.1.30:** Hardbreaks, night theme, Front Matter, GLOSSARY, Nunjucks templates
+- **2025-12-27 v0.1.22:** Self-update, install scripts, footnote rendering
 - **2025-12-25 v0.1.13:** Enable collapsible.js by default (no book.json required)
 - **2025-12-25 v0.1.12:** Fix SPA navigation URL accumulation bug
 - **2025-12-25 v0.1.10:** Fix image paths (remove `<base>` tag), add release workflow

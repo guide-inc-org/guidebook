@@ -60,9 +60,27 @@ jobs:
         with:
           path: artifacts
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          # Each artifact is in its own subdirectory (actions/download-artifact@v4 behavior)
+          for dir in */; do
+            for file in "$dir"*; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                sha256sum "$file" | sed "s|${dir}||" >> ../checksums.txt
+              fi
+            done
+          done
+          echo "## SHA256 Checksums" > ../release_body.md
+          echo '```' >> ../release_body.md
+          cat ../checksums.txt >> ../release_body.md
+          echo '```' >> ../release_body.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: artifacts/**/*
+          body_path: release_body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

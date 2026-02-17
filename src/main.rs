@@ -143,8 +143,7 @@ This file serves as your book's introduction or preface.
 
 fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
     // Build to a unique temp directory (include PID to avoid conflicts with parallel runs)
-    let temp_dir =
-        std::env::temp_dir().join(format!("guidebook-serve-{}", std::process::id()));
+    let temp_dir = std::env::temp_dir().join(format!("guidebook-serve-{}", std::process::id()));
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir)?;
     }
@@ -252,10 +251,9 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
                 format!(r#"{{"reload":false,"version":{}}}"#, current_version)
             };
 
-            let header =
-                Header::from_bytes("Content-Type", "application/json").unwrap_or_else(|_| {
-                    Header::from_bytes("Content-Type", "application/octet-stream").unwrap()
-                });
+            let header = Header::from_bytes("Content-Type", "application/json")
+                .or_else(|_| Header::from_bytes("Content-Type", "application/octet-stream"))
+                .expect("static Content-Type header must be valid");
             let response = Response::from_string(response_body).with_header(header);
             let _ = request.respond(response);
             continue;
@@ -331,15 +329,19 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
                 content = html.into_bytes();
             }
 
-            let header = Header::from_bytes("Content-Type", content_type).unwrap_or_else(|_| {
-                Header::from_bytes("Content-Type", "application/octet-stream").unwrap()
-            });
+            let header = Header::from_bytes("Content-Type", content_type)
+                .or_else(|_| Header::from_bytes("Content-Type", "application/octet-stream"))
+                .expect("static Content-Type header must be valid");
             let response = Response::from_data(content).with_header(header);
             let _ = request.respond(response);
         } else {
             // Try with .html extension (same traversal protection applies)
-            let html_path = format!("{}.html", file_path.display());
-            let html_path = PathBuf::from(&html_path);
+            let mut html_path = file_path.clone();
+            let new_ext = match html_path.extension() {
+                Some(ext) => format!("{}.html", ext.to_string_lossy()),
+                None => "html".to_string(),
+            };
+            html_path.set_extension(new_ext);
 
             if !is_safe_path(&html_path, &temp_dir) {
                 let response = Response::from_string("403 Forbidden").with_status_code(403);

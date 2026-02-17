@@ -351,12 +351,10 @@ fn test_serve_rejects_path_traversal() {
 
     if !wait_for_server(port) {
         child.kill().ok();
-        // Don't panic — port may be in use from a previous failed test run
-        eprintln!(
-            "Warning: Server did not start on port {}, skipping test",
+        panic!(
+            "Server did not start on port {} within 20s — security tests cannot run",
             port
         );
-        return;
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -419,4 +417,93 @@ fn test_serve_rejects_path_traversal() {
 
     child.kill().ok();
     child.wait().ok();
+}
+
+// ── Multi-language build test ──
+
+/// Create a multi-language book structure for testing
+fn create_multilang_book(dir: &std::path::Path) {
+    // LANGS.md at root
+    fs::write(
+        dir.join("LANGS.md"),
+        "* [English](en/)\n* [Japanese](ja/)\n",
+    )
+    .unwrap();
+
+    // book.json
+    fs::write(dir.join("book.json"), r#"{"title": "Multi-lang Book"}"#).unwrap();
+
+    // English
+    let en = dir.join("en");
+    fs::create_dir_all(&en).unwrap();
+    fs::write(en.join("README.md"), "# English Intro\nWelcome\n").unwrap();
+    fs::write(
+        en.join("SUMMARY.md"),
+        "# Summary\n\n* [Introduction](README.md)\n* [Chapter 1](ch1.md)\n",
+    )
+    .unwrap();
+    fs::write(en.join("ch1.md"), "# Chapter 1\nEnglish content\n").unwrap();
+
+    // Japanese
+    let ja = dir.join("ja");
+    fs::create_dir_all(&ja).unwrap();
+    fs::write(ja.join("README.md"), "# Japanese Intro\nようこそ\n").unwrap();
+    fs::write(
+        ja.join("SUMMARY.md"),
+        "# Summary\n\n* [Introduction](README.md)\n* [Chapter 1](ch1.md)\n",
+    )
+    .unwrap();
+    fs::write(ja.join("ch1.md"), "# Chapter 1\n日本語コンテンツ\n").unwrap();
+}
+
+#[test]
+fn test_multilang_build() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+
+    create_multilang_book(&source);
+
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .expect("Failed to execute guidebook build");
+
+    assert!(status.success(), "Multi-language build should succeed");
+
+    // Verify language index was generated
+    let index = output.join("index.html");
+    assert!(
+        index.exists(),
+        "Root index.html should be generated for language selection"
+    );
+
+    // Verify English output
+    let en_index = output.join("en/index.html");
+    assert!(en_index.exists(), "en/index.html should be generated");
+    let en_content = fs::read_to_string(&en_index).unwrap();
+    assert!(
+        en_content.contains("English Intro") || en_content.contains("Welcome"),
+        "English index should contain English content"
+    );
+
+    // Verify Japanese output
+    let ja_index = output.join("ja/index.html");
+    assert!(ja_index.exists(), "ja/index.html should be generated");
+    let ja_content = fs::read_to_string(&ja_index).unwrap();
+    assert!(
+        ja_content.contains("Japanese Intro") || ja_content.contains("ようこそ"),
+        "Japanese index should contain Japanese content"
+    );
+
+    // Verify chapter pages for both languages
+    let en_ch1 = output.join("en/ch1.html");
+    assert!(en_ch1.exists(), "en/ch1.html should be generated");
+
+    let ja_ch1 = output.join("ja/ch1.html");
+    assert!(ja_ch1.exists(), "ja/ch1.html should be generated");
 }
