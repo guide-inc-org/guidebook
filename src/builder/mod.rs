@@ -85,6 +85,13 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
     // Check for multi-language book
     let languages = parser::langs::parse_langs(&source)?;
 
+    // Remove stale files from a previous build (deleted/renamed pages would
+    // otherwise live in the output forever). Skipped on hot reload; dot
+    // entries (.git, .nojekyll, ...) are preserved.
+    if !skip_search_index {
+        clean_output_dir(output, &source)?;
+    }
+
     let stats = if languages.is_empty() {
         // Single language book
         println!("Building single-language book...");
@@ -174,7 +181,7 @@ fn build_single_book(
     // Generate index.html from README.md if exists
     let readme_path = source.join("README.md");
     if readme_path.exists() {
-        let raw_content = fs::read_to_string(&readme_path)?;
+        let raw_content = read_text_lossy(&readme_path)?;
         // Parse front matter
         let parsed = parse_front_matter(&raw_content);
         let front_matter = parsed.front_matter;
@@ -209,14 +216,14 @@ fn build_single_book(
             lang_prefix,
         )?;
         // Apply SVG processing if configured
-        let page_html = apply_svg_processing(page_html, output, config)?;
+        let page_html = apply_svg_processing(page_html, output, "./", config)?;
         fs::write(output.join("index.html"), page_html)?;
         stats.pages += 1;
     }
 
     // Generate search index (skip on hot reload for performance)
     if !skip_search_index {
-        generate_search_index(source, output, &summary)?;
+        generate_search_index(source, output, &summary, config)?;
     }
 
     // Download remote images if enabled
@@ -254,6 +261,9 @@ fn write_static_assets(output: &Path, config: &BookConfig) -> Result<()> {
 
     // Write search JS
     fs::write(gitbook_dir.join("search.js"), SEARCH_JS)?;
+
+    // Write favicon / touch icon referenced by the page templates
+    write_favicon_assets(&gitbook_dir)?;
 
     Ok(())
 }
@@ -387,7 +397,7 @@ fn build_chapters_inner(
                     built_files.insert(base_path.to_string());
 
                     // Read file content
-                    let raw_content = fs::read_to_string(&src_file)?;
+                    let raw_content = read_text_lossy(&src_file)?;
                     // Parse front matter
                     let parsed = parse_front_matter(&raw_content);
                     let front_matter = parsed.front_matter;
@@ -438,10 +448,7 @@ fn build_chapters_inner(
 
                     // Generate output path (use base_path without anchor)
                     // Handle .md, .adoc, and .asciidoc extensions
-                    let html_path = base_path
-                        .replace(".md", ".html")
-                        .replace(".adoc", ".html")
-                        .replace(".asciidoc", ".html");
+                    let html_path = template::source_path_to_html(base_path);
                     let dest_file = output.join(&html_path);
 
                     // Calculate relative path to root
@@ -472,7 +479,7 @@ fn build_chapters_inner(
                     )?;
 
                     // Apply SVG processing if configured
-                    let page_html = apply_svg_processing(page_html, output, config)?;
+                    let page_html = apply_svg_processing(page_html, output, &root_path, config)?;
 
                     // Write output
                     if let Some(parent) = dest_file.parent() {
@@ -505,9 +512,61 @@ fn build_chapters_inner(
     Ok(count)
 }
 
+/// Remove previous build output so deleted/renamed pages don't linger.
+/// Dot entries (.git, .nojekyll, ...) are preserved — publishing setups keep
+/// them inside the output directory. Never cleans when the output directory
+/// IS the source (or contains it): that would delete the book itself.
+fn clean_output_dir(output: &Path, source: &Path) -> Result<()> {
+    if !output.exists() {
+        return Ok(());
+    }
+    let (Ok(out_canonical), Ok(src_canonical)) = (output.canonicalize(), source.canonicalize())
+    else {
+        return Ok(());
+    };
+    if src_canonical.starts_with(&out_canonical) {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&out_canonical)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read a text file, tolerating invalid UTF-8 with a lossy conversion and a
+/// warning. A single non-UTF-8 page must not abort the whole build.
+fn read_text_lossy(path: &Path) -> Result<String> {
+    let bytes = fs::read(path)?;
+    match String::from_utf8(bytes) {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            eprintln!(
+                "  Warning: {} is not valid UTF-8; replacing invalid sequences",
+                path.display()
+            );
+            Ok(String::from_utf8_lossy(e.as_bytes()).into_owned())
+        }
+    }
+}
+
 fn copy_assets(source: &Path, output: &Path) -> Result<usize> {
     let mut count = 0;
     let asset_dir_names: &[&str] = &["assets", "images", "image", "img"];
+
+    // Canonical output path: when the output dir lives INSIDE the source
+    // (e.g. `build . -o out`), it must be excluded from the walk or its own
+    // asset dirs get re-copied into out/out/... one level deeper per build
+    let output_canonical = output.canonicalize().ok();
 
     // Copy root-level asset directories
     for dir_name in asset_dir_names {
@@ -522,9 +581,23 @@ fn copy_assets(source: &Path, output: &Path) -> Result<usize> {
     for entry in walkdir::WalkDir::new(source).into_iter().filter_entry(|e| {
         // Skip root-level asset dirs (already copied) and output directories
         let name = e.file_name().to_string_lossy();
-        !(e.depth() == 1 && asset_dir_names.contains(&name.as_ref()))
-            && name != "_book"
-            && name != "node_modules"
+        if (e.depth() == 1 && asset_dir_names.contains(&name.as_ref()))
+            || name == "_book"
+            || name == "node_modules"
+        {
+            return false;
+        }
+        // Skip the output directory itself wherever it is
+        if e.file_type().is_dir() {
+            if let (Some(out), Ok(entry_canonical)) =
+                (output_canonical.as_ref(), e.path().canonicalize())
+            {
+                if &entry_canonical == out {
+                    return false;
+                }
+            }
+        }
+        true
     }) {
         let entry = entry?;
         if entry.file_type().is_dir() {
@@ -552,27 +625,56 @@ fn copy_dir_recursive_count(src: &Path, dest: &Path) -> Result<usize> {
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&dest_path)?;
-        } else {
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            // Skip if destination already exists (might be from a previous build or another language)
-            if dest_path.exists() || dest_path.symlink_metadata().is_ok() {
+            continue;
+        }
+
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // A broken symlink among the assets must not abort the whole build
+        let src_meta = match entry.path().metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "  Warning: skipping asset {} ({})",
+                    entry.path().display(),
+                    e
+                );
                 continue;
             }
-            // Use symlinks on Unix for faster builds (no actual file copy)
-            // Falls back to copy on Windows
-            #[cfg(unix)]
-            {
-                let abs_src = entry.path().canonicalize()?;
-                std::os::unix::fs::symlink(&abs_src, &dest_path)?;
+        };
+
+        if let Ok(dest_meta) = dest_path.symlink_metadata() {
+            if dest_meta.file_type().is_symlink() {
+                // Output written by an older guidebook version used symlinks;
+                // replace with a real copy so the output is self-contained
+                fs::remove_file(&dest_path)?;
+            } else {
+                // Up-to-date check: previously ANY existing destination was
+                // skipped, so changed assets were never refreshed on rebuild
+                let up_to_date = dest_meta.len() == src_meta.len()
+                    && match (dest_meta.modified(), src_meta.modified()) {
+                        (Ok(d), Ok(s)) => d >= s,
+                        _ => false,
+                    };
+                if up_to_date {
+                    continue;
+                }
             }
-            #[cfg(not(unix))]
-            {
-                fs::copy(entry.path(), &dest_path)?;
-            }
-            count += 1;
         }
+
+        // Real copy, not a symlink: symlinked output broke as soon as _book
+        // was deployed elsewhere (tar/rsync/CI artifacts → dangling links)
+        if let Err(e) = fs::copy(entry.path(), &dest_path) {
+            eprintln!(
+                "  Warning: failed to copy asset {}: {}",
+                entry.path().display(),
+                e
+            );
+            continue;
+        }
+        count += 1;
     }
 
     Ok(count)
@@ -662,6 +764,8 @@ fn strip_html_tags(html: &str) -> String {
 fn collect_search_entries(
     source: &Path,
     items: &[SummaryItem],
+    config: &BookConfig,
+    seen_paths: &mut HashSet<String>,
     entries: &mut Vec<SearchEntry>,
 ) -> Result<()> {
     for item in items {
@@ -674,34 +778,49 @@ fn collect_search_entries(
             if let Some(file_path) = path {
                 // Strip leading slash to handle absolute-style paths in SUMMARY.md
                 let file_path = file_path.trim_start_matches('/');
-                let src_file = source.join(file_path);
+                // SUMMARY paths may carry an anchor (guide.md#setup) — strip
+                // it before touching the filesystem, or the page silently
+                // vanishes from the search index
+                let file_only = file_path.split('#').next().unwrap_or(file_path);
+                let src_file = source.join(file_only);
                 if src_file.exists() {
-                    let content = fs::read_to_string(&src_file)?;
-
-                    // Render based on file type
-                    let html_content = if is_asciidoc_file(&src_file) {
-                        render_asciidoc(&content)
-                    } else {
-                        render_markdown(&content)
-                    };
-
-                    let text_content = strip_html_tags(&html_content);
-
                     // Generate HTML path for any supported extension
-                    let html_path = file_path
-                        .replace(".md", ".html")
-                        .replace(".adoc", ".html")
-                        .replace(".asciidoc", ".html");
+                    let html_path = template::source_path_to_html(file_only);
 
-                    entries.push(SearchEntry {
-                        title: title.clone(),
-                        path: html_path,
-                        content: text_content,
-                    });
+                    // A file referenced twice (e.g. with different anchors)
+                    // must be indexed only once
+                    if seen_paths.insert(html_path.clone()) {
+                        let raw = read_text_lossy(&src_file)?;
+
+                        // Mirror the page build pipeline (front matter →
+                        // @import → templates) so the index matches what the
+                        // reader actually sees — previously the raw file was
+                        // indexed: front matter leaked in, imported content
+                        // and expanded variables were missing
+                        let parsed = parse_front_matter(&raw);
+                        let imported = process_imports_for_file(&parsed.content, &src_file)?;
+                        let content = nunjucks::process_nunjucks_templates(&imported, config)
+                            .unwrap_or_else(|_| imported.clone());
+
+                        // Render based on file type
+                        let html_content = if is_asciidoc_file(&src_file) {
+                            render_asciidoc(&content)
+                        } else {
+                            render_markdown(&content)
+                        };
+
+                        let text_content = strip_html_tags(&html_content);
+
+                        entries.push(SearchEntry {
+                            title: title.clone(),
+                            path: html_path,
+                            content: text_content,
+                        });
+                    }
                 }
             }
             if !children.is_empty() {
-                collect_search_entries(source, children, entries)?;
+                collect_search_entries(source, children, config, seen_paths, entries)?;
             }
         }
     }
@@ -709,13 +828,23 @@ fn collect_search_entries(
 }
 
 /// Generate search index JSON file
-fn generate_search_index(source: &Path, output: &Path, summary: &Summary) -> Result<()> {
+fn generate_search_index(
+    source: &Path,
+    output: &Path,
+    summary: &Summary,
+    config: &BookConfig,
+) -> Result<()> {
     let mut entries = Vec::new();
+    let mut seen_paths = HashSet::new();
 
     // Collect from README.md
     let readme_path = source.join("README.md");
     if readme_path.exists() {
-        let content = fs::read_to_string(&readme_path)?;
+        let raw = read_text_lossy(&readme_path)?;
+        let parsed = parse_front_matter(&raw);
+        let imported = process_imports_for_file(&parsed.content, &readme_path)?;
+        let content = nunjucks::process_nunjucks_templates(&imported, config)
+            .unwrap_or_else(|_| imported.clone());
         let html_content = render_markdown(&content);
         let text_content = strip_html_tags(&html_content);
 
@@ -727,7 +856,13 @@ fn generate_search_index(source: &Path, output: &Path, summary: &Summary) -> Res
     }
 
     // Collect from all chapters
-    collect_search_entries(source, &summary.items, &mut entries)?;
+    collect_search_entries(
+        source,
+        &summary.items,
+        config,
+        &mut seen_paths,
+        &mut entries,
+    )?;
 
     // Write search index
     let json = serde_json::to_string(&entries)?;
@@ -752,8 +887,16 @@ fn process_remote_images(output: &Path) -> Result<usize> {
                     // Read HTML file
                     let html = fs::read_to_string(entry.path())?;
 
+                    // Depth of this page below the output root — the local
+                    // image path needs a matching ../ prefix on nested pages
+                    let depth = entry
+                        .path()
+                        .strip_prefix(output)
+                        .map(|rel| rel.components().count().saturating_sub(1))
+                        .unwrap_or(0);
+
                     // Process remote images
-                    match downloader.process_html(&html) {
+                    match downloader.process_html(&html, depth) {
                         Ok(processed_html) => {
                             // Only write back if content changed
                             if processed_html != html {
@@ -806,7 +949,11 @@ fn process_imports(
             }
         };
 
-        // Check for circular imports
+        // Check for circular imports — `visited` holds the CURRENT import
+        // chain (ancestors), not every file ever imported. Importing the same
+        // snippet twice on a page, or via a diamond (A→B→D, A→C→D), is
+        // legitimate; only a file importing itself through its ancestry is a
+        // cycle.
         if visited.contains(&canonical_path) {
             eprintln!(
                 "  Warning: Circular @import detected, skipping: {}",
@@ -815,11 +962,8 @@ fn process_imports(
             continue;
         }
 
-        // Mark this file as visited
-        visited.insert(canonical_path.clone());
-
         // Read the imported file
-        let imported_content = match fs::read_to_string(&canonical_path) {
+        let imported_content = match read_text_lossy(&canonical_path) {
             Ok(c) => {
                 // Strip UTF-8 BOM if present (fixes reference link parsing)
                 c.strip_prefix('\u{FEFF}').unwrap_or(&c).to_string()
@@ -834,10 +978,12 @@ fn process_imports(
             }
         };
 
-        // Recursively process imports in the imported content
+        // Recursively process imports with this file pushed onto the chain
         // Use the directory of the imported file as the new base path
+        visited.insert(canonical_path.clone());
         let import_base_path = canonical_path.parent().unwrap_or(base_path);
         let processed_content = process_imports(&imported_content, import_base_path, visited)?;
+        visited.remove(&canonical_path);
 
         // Calculate the adjusted positions accounting for previous replacements
         let start = (full_match.start() as i64 + offset) as usize;
@@ -870,12 +1016,19 @@ fn process_imports_for_file(content: &str, file_path: &Path) -> Result<String> {
 }
 
 /// Apply SVG processing to HTML based on config options
-fn apply_svg_processing(html: String, output_dir: &Path, config: &BookConfig) -> Result<String> {
+/// `root_prefix` is the page's relative prefix back to the output root
+/// ("./" at root, "../../" at depth 2)
+fn apply_svg_processing(
+    html: String,
+    output_dir: &Path,
+    root_prefix: &str,
+    config: &BookConfig,
+) -> Result<String> {
     let mut result = html;
 
     // Apply externalize_svg if enabled
     if config.externalize_svg == Some(true) {
-        result = svg::externalize_inline_svg(&result, output_dir)?;
+        result = svg::externalize_inline_svg(&result, output_dir, root_prefix)?;
     }
 
     // Apply inline_svg if enabled
@@ -1031,10 +1184,25 @@ fn copy_gitbook_static_to_root(output: &Path) -> Result<()> {
 
     fs::write(gitbook_dir.join("style.css"), style_css)?;
 
-    // Create images directory with placeholder favicon
+    // Write the favicon files the templates link to (previously only the
+    // empty directory was created and every page 404'd on the icons)
+    write_favicon_assets(&gitbook_dir)?;
+
+    Ok(())
+}
+
+/// Write favicon / touch-icon files into <gitbook_dir>/images/
+fn write_favicon_assets(gitbook_dir: &Path) -> Result<()> {
     let images_dir = gitbook_dir.join("images");
     fs::create_dir_all(&images_dir)?;
-
+    fs::write(
+        images_dir.join("favicon.ico"),
+        include_bytes!("../../assets/favicon.ico"),
+    )?;
+    fs::write(
+        images_dir.join("apple-touch-icon-precomposed-152.png"),
+        include_bytes!("../../assets/apple-touch-icon-precomposed-152.png"),
+    )?;
     Ok(())
 }
 

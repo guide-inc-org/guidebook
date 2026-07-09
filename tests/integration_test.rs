@@ -507,3 +507,291 @@ fn test_multilang_build() {
     let ja_ch1 = output.join("ja/ch1.html");
     assert!(ja_ch1.exists(), "ja/ch1.html should be generated");
 }
+
+#[test]
+fn test_repeated_import_is_expanded_twice() {
+    // Regression: the @import visited-set treated a second import of the
+    // same file as "circular" and silently dropped it
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    fs::write(source.join("snippet.md"), "REUSABLE-NOTICE\n").unwrap();
+    fs::write(
+        source.join("chapter1.md"),
+        "# Chapter 1\n\n<!-- @import(\"snippet.md\") -->\n\nmiddle\n\n<!-- @import(\"snippet.md\") -->\n",
+    )
+    .unwrap();
+
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let html = fs::read_to_string(output.join("chapter1.html")).unwrap();
+    assert_eq!(
+        html.matches("REUSABLE-NOTICE").count(),
+        2,
+        "both imports must be expanded: {}",
+        html
+    );
+}
+
+#[test]
+fn test_orphan_files_removed_and_dotfiles_preserved() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    // First build + plant an orphan and a dotfile
+    let run = |arg_src: &str, arg_out: &str| {
+        Command::new(guidebook_bin())
+            .arg("build")
+            .arg(arg_src)
+            .arg("-o")
+            .arg(arg_out)
+            .status()
+            .unwrap()
+    };
+    assert!(run(source.to_str().unwrap(), output.to_str().unwrap()).success());
+    fs::write(output.join("orphan.html"), "stale page").unwrap();
+    fs::write(output.join(".nojekyll"), "").unwrap();
+
+    assert!(run(source.to_str().unwrap(), output.to_str().unwrap()).success());
+    assert!(
+        !output.join("orphan.html").exists(),
+        "stale output must be cleaned"
+    );
+    assert!(
+        output.join(".nojekyll").exists(),
+        "dot entries must be preserved"
+    );
+    assert!(output.join("index.html").exists());
+}
+
+#[test]
+fn test_changed_asset_is_refreshed_on_rebuild() {
+    // Regression: any existing destination file was skipped, so edited
+    // assets never reached the output on rebuild
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    let build = || {
+        Command::new(guidebook_bin())
+            .arg("build")
+            .arg(source.to_str().unwrap())
+            .arg("-o")
+            .arg(output.to_str().unwrap())
+            .status()
+            .unwrap()
+    };
+    assert!(build().success());
+    assert_eq!(
+        fs::read_to_string(output.join("assets/test.txt")).unwrap(),
+        "test asset content"
+    );
+
+    fs::write(source.join("assets/test.txt"), "UPDATED asset content!").unwrap();
+    assert!(build().success());
+    assert_eq!(
+        fs::read_to_string(output.join("assets/test.txt")).unwrap(),
+        "UPDATED asset content!",
+        "changed assets must be refreshed"
+    );
+}
+
+#[test]
+fn test_output_is_self_contained_no_symlinks() {
+    // Regression: assets were symlinked to absolute source paths, so a
+    // deployed _book directory was full of dangling links
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    for entry in walkdir_all(&output) {
+        let meta = fs::symlink_metadata(&entry).unwrap();
+        assert!(
+            !meta.file_type().is_symlink(),
+            "output must not contain symlinks: {}",
+            entry.display()
+        );
+    }
+}
+
+fn walkdir_all(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walkdir_all(&p));
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn test_favicon_files_emitted() {
+    // Regression: templates linked gitbook/images/favicon.ico but the build
+    // never wrote the file — every guidebook site had a 404 favicon
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let favicon = output.join("gitbook/images/favicon.ico");
+    assert!(favicon.exists(), "favicon.ico must be emitted");
+    assert!(fs::metadata(&favicon).unwrap().len() > 0);
+    assert!(output
+        .join("gitbook/images/apple-touch-icon-precomposed-152.png")
+        .exists());
+
+    // Pages must link it with the depth-aware root path
+    let index = fs::read_to_string(output.join("index.html")).unwrap();
+    assert!(
+        index.contains("gitbook/images/favicon.ico"),
+        "pages must link the favicon"
+    );
+}
+
+#[test]
+fn test_search_index_handles_anchors_and_front_matter() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    fs::write(
+        source.join("SUMMARY.md"),
+        "# Summary\n\n* [Introduction](README.md)\n* [Anchored](chapter1.md#setup)\n",
+    )
+    .unwrap();
+    fs::write(
+        source.join("chapter1.md"),
+        "---\ntitle: FM Title\ndescription: SECRETMETA\n---\n# Setup\n\nSearchable body text.\n",
+    )
+    .unwrap();
+
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let idx = fs::read_to_string(output.join("search_index.json")).unwrap();
+    // Regression: anchor paths silently dropped the page from the index
+    assert!(
+        idx.contains("Searchable body text"),
+        "anchored page must be indexed: {}",
+        idx
+    );
+    assert!(
+        idx.contains("chapter1.html"),
+        "index path must be the html file: {}",
+        idx
+    );
+    // Regression: raw front matter leaked into the index content
+    assert!(
+        !idx.contains("SECRETMETA"),
+        "front matter must not be indexed: {}",
+        idx
+    );
+}
+
+#[test]
+fn test_non_utf8_page_does_not_abort_build() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    // chapter1.md with an invalid UTF-8 byte sequence
+    let mut bytes = b"# Chapter 1\n\nvalid text ".to_vec();
+    bytes.extend_from_slice(&[0xFF, 0xFE]);
+    bytes.extend_from_slice(b" more text\n");
+    fs::write(source.join("chapter1.md"), bytes).unwrap();
+
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "a single non-UTF-8 page must not abort the whole build"
+    );
+    let html = fs::read_to_string(output.join("chapter1.html")).unwrap();
+    assert!(html.contains("more text"));
+}
+
+#[test]
+fn test_output_inside_source_does_not_snowball() {
+    // Regression: `build . -o out` re-copied out/assets into out/out/assets
+    // on every rebuild, one level deeper each time
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+    let output = source.join("out");
+
+    let build = || {
+        Command::new(guidebook_bin())
+            .arg("build")
+            .arg(source.to_str().unwrap())
+            .arg("-o")
+            .arg(output.to_str().unwrap())
+            .status()
+            .unwrap()
+    };
+    assert!(build().success());
+    assert!(build().success());
+    assert!(build().success());
+
+    assert!(output.join("assets/test.txt").exists());
+    assert!(
+        !output.join("out").exists(),
+        "output dir must not be copied into itself"
+    );
+}

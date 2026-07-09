@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Favicon: the build now actually emits `gitbook/images/favicon.ico` / apple-touch-icon (previously only linked, always 404) and content pages link them with the depth-aware root path
+- Front matter: a `----` line no longer closes the front matter early (closing delimiter must be exactly `---`); UTF-8 BOM-prefixed files keep their front matter
+- Glossary: a `>` inside a quoted attribute value no longer breaks the tag tracker (spans were injected into attributes); `class="no-glossary"` on void/self-closing elements (`<img/>` etc.) no longer disables the glossary for the rest of the page
+- SUMMARY.md: a second link in the same list item no longer silently replaces the first entry
+- Nunjucks: fences indented in list items, `~~~` fences, and longer ` ```` ` runs are now protected from template processing (previously only column-0 backtick fences were)
+- Remote images: URLs are entity-decoded before download (`&amp;` broke multi-parameter/signed URLs); non-image responses (e.g. HTML error pages served with 200) are refused instead of being saved as broken `.png`; downloaded images now resolve from nested pages; self-closing `<img/>` no longer gains a double slash
+- Inline SVG: nested `<svg>` elements are externalized whole (the previous regex cut them at the first `</svg>`, emitting invalid XML); `width`/`height` presence is checked on the root tag only (child `<rect width=...>` no longer blocks size injection); externalized files resolve from nested pages
+- Links: root-relative `<img src="/...">` is now depth-adjusted like `href` (was 404 on nested pages); Windows backslash normalization and leading-slash removal in attributes actually fire (the detection was structurally dead code); sidebar and sitemap `href` values are HTML-escaped; `.md`/`.adoc` → `.html` conversion only touches the trailing extension
+- Assets: output is now self-contained real copies instead of absolute-path symlinks (deployed `_book` no longer breaks); changed assets are refreshed on rebuild (previously never); a broken symlink in assets warns instead of aborting the build; building with `-o` inside the source no longer re-copies the output into itself
+- Build: stale files from deleted/renamed pages are cleaned from the output (dot entries like `.git` preserved); a non-UTF-8 page warns and builds instead of aborting everything; repeated `@import` of the same snippet works (only true cycles are rejected)
+- Search index: pages referenced with anchors (`file.md#sec`) are indexed; the index is built from the processed content (front matter no longer leaks in, imported/template content is searchable)
+- Serve: editing `.adoc` pages and images now triggers hot reload; extensionless URLs get the livereload script
+- Self-update: if the final rename fails the previous binary is restored instead of leaving no executable
+- book.json: `openapi` paths are validated against path traversal (absolute / `..` rejected)
 - Glossary: multi-byte terms (Japanese) no longer eat the text that follows them (byte-length vs char-count skip bug)
 - Glossary: word-boundary detection now uses script classes (kanji/hiragana/katakana/alphanumeric), so Japanese terms inside Japanese sentences actually match; partial matches inside same-script compounds (e.g. 専門用語集) are still rejected
 - LANGS.md: malformed lines (missing bracket/paren) are skipped instead of panicking and aborting the whole build

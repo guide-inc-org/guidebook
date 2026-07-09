@@ -30,6 +30,23 @@ pub fn generate_swagger_ui(source: &Path, output: &Path, config: &OpenApiConfig)
     Ok(())
 }
 
+/// Reject config-supplied path fragments that would escape the base
+/// directory. `Path::join` REPLACES the base when given an absolute path, and
+/// ".." components walk out of it — both would let a book.json read or write
+/// arbitrary filesystem locations.
+fn validate_contained_path(value: &str, what: &str) -> Result<()> {
+    let p = Path::new(value);
+    if p.is_absolute() {
+        anyhow::bail!("{} must be a relative path, got: {}", what, value);
+    }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("{} must not contain '..', got: {}", what, value);
+    }
+    Ok(())
+}
+
 /// Generate a single Swagger UI page
 fn generate_single_swagger_ui(
     source: &Path,
@@ -37,6 +54,9 @@ fn generate_single_swagger_ui(
     output_dir: &str,
     openapi_path: &str,
 ) -> Result<()> {
+    validate_contained_path(output_dir, "openapi output directory")?;
+    validate_contained_path(openapi_path, "openapi spec path")?;
+
     // Create output directory
     let api_docs_dir = output.join(output_dir);
     fs::create_dir_all(&api_docs_dir)?;
@@ -142,5 +162,34 @@ mod tests {
     fn test_generate_swagger_html_custom_filename() {
         let html = generate_swagger_html("openapi.yaml");
         assert!(html.contains("./openapi.yaml"));
+    }
+
+    #[test]
+    fn test_path_traversal_rejected() {
+        // Regression: book.json could point openapi at absolute paths or
+        // ../ escapes, reading/writing outside source and output
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+
+        assert!(generate_single_swagger_ui(&src, &out, "api-docs", "../../etc/passwd").is_err());
+        assert!(generate_single_swagger_ui(&src, &out, "api-docs", "/etc/passwd").is_err());
+        assert!(generate_single_swagger_ui(&src, &out, "/tmp/pwned", "swagger.json").is_err());
+        assert!(generate_single_swagger_ui(&src, &out, "../outside", "swagger.json").is_err());
+    }
+
+    #[test]
+    fn test_valid_relative_paths_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(src.join("specs")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(src.join("specs/swagger.json"), "{}").unwrap();
+
+        assert!(generate_single_swagger_ui(&src, &out, "api-docs", "specs/swagger.json").is_ok());
+        assert!(out.join("api-docs/swagger.json").exists());
     }
 }

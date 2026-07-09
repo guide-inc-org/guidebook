@@ -63,8 +63,10 @@ pub struct ParsedContent {
 /// assert_eq!(fm.description.as_deref(), Some("This is my page"));
 /// ```
 pub fn parse_front_matter(content: &str) -> ParsedContent {
-    // Check if content starts with front matter delimiter
-    let trimmed = content.trim_start();
+    // Check if content starts with front matter delimiter.
+    // Strip a UTF-8 BOM first — trim_start() does not remove U+FEFF, so a
+    // BOM-prefixed file would silently lose its front matter otherwise.
+    let trimmed = content.trim_start_matches('\u{FEFF}').trim_start();
     if !trimmed.starts_with("---") {
         return ParsedContent {
             front_matter: None,
@@ -108,25 +110,36 @@ pub fn parse_front_matter(content: &str) -> ParsedContent {
     } else if after_opening == "---" {
         ("", "")
     } else {
-        // Look for closing --- with newline patterns
-        let closing_patterns = ["\n---\n", "\n---\r\n", "\r\n---\n", "\r\n---\r\n", "\n---"];
+        // Look for the closing delimiter: a line that is exactly "---".
+        // A loose substring search (e.g. "\n---") would also match lines
+        // like "----" and silently corrupt the front matter / body split.
+        let mut found: Option<(usize, usize)> = None; // (yaml_end, body_start)
+        let mut search = 0usize;
 
-        let mut end_pos = None;
-        let mut pattern_len = 0;
+        while let Some(nl) = after_opening[search..].find('\n') {
+            let line_start = search + nl + 1;
+            let line_end = after_opening[line_start..]
+                .find('\n')
+                .map(|p| line_start + p)
+                .unwrap_or(after_opening.len());
+            let line = after_opening[line_start..line_end].trim_end_matches('\r');
 
-        for pattern in closing_patterns {
-            if let Some(pos) = after_opening.find(pattern) {
-                if end_pos.is_none() || pos < end_pos.unwrap() {
-                    end_pos = Some(pos);
-                    pattern_len = pattern.len();
-                }
+            if line == "---" {
+                let body_start = if line_end < after_opening.len() {
+                    line_end + 1
+                } else {
+                    after_opening.len()
+                };
+                found = Some((search + nl, body_start));
+                break;
             }
+            search = line_start;
         }
 
-        match end_pos {
-            Some(pos) => {
-                let yaml = &after_opening[..pos];
-                let after_closing = &after_opening[pos + pattern_len..];
+        match found {
+            Some((yaml_end, body_start)) => {
+                let yaml = after_opening[..yaml_end].trim_end_matches('\r');
+                let after_closing = &after_opening[body_start..];
                 (yaml, after_closing)
             }
             None => {
@@ -350,5 +363,53 @@ description: Japanese description
         let content = "---\ntitle: \"quote: \\\"escaped\\\"\"\ndescription: 'single: \\'quoted\\''\n---\nContent";
         let parsed = parse_front_matter(content);
         let _ = parsed;
+    }
+
+    #[test]
+    fn test_four_dash_line_is_not_closing_delimiter() {
+        // Regression: the loose "\n---" pattern matched "----" lines and
+        // silently corrupted the front matter / body split
+        let content = "---\ntitle: Test\n----\nBody content here\n";
+        let parsed = parse_front_matter(content);
+        // "----" must NOT close the front matter; with no real closing
+        // delimiter the whole content is returned untouched
+        assert!(parsed.front_matter.is_none());
+        assert_eq!(parsed.content, content);
+    }
+
+    #[test]
+    fn test_dash_ruler_in_body_not_confused() {
+        let content = "---\ntitle: Test\n---\nBody\n\n----\n\nMore body\n";
+        let parsed = parse_front_matter(content);
+        assert_eq!(
+            parsed.front_matter.and_then(|f| f.title),
+            Some("Test".to_string())
+        );
+        assert!(parsed.content.contains("----"));
+        assert!(parsed.content.contains("More body"));
+    }
+
+    #[test]
+    fn test_bom_prefixed_front_matter_detected() {
+        // Regression: trim_start() does not strip U+FEFF, so BOM-prefixed
+        // files silently lost their front matter
+        let content = "\u{FEFF}---\ntitle: Bom\n---\nBody\n";
+        let parsed = parse_front_matter(content);
+        assert_eq!(
+            parsed.front_matter.and_then(|f| f.title),
+            Some("Bom".to_string())
+        );
+        assert_eq!(parsed.content, "Body\n");
+    }
+
+    #[test]
+    fn test_closing_delimiter_with_crlf() {
+        let content = "---\r\ntitle: Test\r\n---\r\nBody\r\n";
+        let parsed = parse_front_matter(content);
+        assert_eq!(
+            parsed.front_matter.and_then(|f| f.title),
+            Some("Test".to_string())
+        );
+        assert!(parsed.content.starts_with("Body"));
     }
 }

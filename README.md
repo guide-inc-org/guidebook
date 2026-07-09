@@ -123,8 +123,10 @@ No configuration changes required.
 
 ## Security
 
+- **Trust model**: book content is trusted input. Raw HTML/SVG written in Markdown is passed through to the output (same model as mdBook) — don't build books from untrusted authors and publish the result unreviewed
 - **Dev server**: Path traversal protection blocks `..` access and symlink escapes
-- **Image downloads**: 50 MB size limit with streaming enforcement (aborts mid-download)
+- **book.json**: `openapi` paths are validated — absolute paths and `..` traversal are rejected
+- **Image downloads**: 50 MB size limit with streaming enforcement (aborts mid-download); non-image responses are refused
 - **Self-update**: SHA256 checksum verification is mandatory; unverified binaries are refused
 
 See [CONTRIBUTING.md](CONTRIBUTING.md#security-model) for details.

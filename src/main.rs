@@ -169,7 +169,8 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
                     | EventKind::Remove(_)
             );
             if dominated {
-                // Check if it's a relevant file (md, json, css, js)
+                // Check if it's a relevant file: content (md/adoc), config,
+                // styles/scripts, and referenced assets (images/fonts)
                 // Exclude _book directory and other build artifacts
                 let dominated = event.paths.iter().any(|p| {
                     // Skip files in _book directory (build output)
@@ -179,7 +180,30 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
                     }
                     p.extension()
                         .and_then(|e| e.to_str())
-                        .map(|e| matches!(e, "md" | "json" | "css" | "js" | "html"))
+                        .map(|e| {
+                            matches!(
+                                e.to_ascii_lowercase().as_str(),
+                                "md" | "adoc"
+                                    | "asciidoc"
+                                    | "json"
+                                    | "css"
+                                    | "js"
+                                    | "html"
+                                    | "png"
+                                    | "jpg"
+                                    | "jpeg"
+                                    | "gif"
+                                    | "svg"
+                                    | "webp"
+                                    | "ico"
+                                    | "avif"
+                                    | "bmp"
+                                    | "woff"
+                                    | "woff2"
+                                    | "ttf"
+                                    | "otf"
+                            )
+                        })
                         .unwrap_or(false)
                 });
                 if dominated {
@@ -303,30 +327,7 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
 
             // Inject livereload script into HTML pages
             if content_type.starts_with("text/html") {
-                let current_version = version.load(Ordering::SeqCst);
-                let livereload_script = format!(
-                    r#"<script>
-(function(){{
-    var version={};
-    function checkReload(){{
-        fetch('/__livereload?v='+version)
-            .then(function(r){{return r.json()}})
-            .then(function(data){{
-                if(data.reload){{
-                    version=data.version;
-                    location.reload();
-                }}
-            }})
-            .catch(function(){{}});
-    }}
-    setInterval(checkReload,1000);
-}})();
-</script></body>"#,
-                    current_version
-                );
-                let html = String::from_utf8_lossy(&content);
-                let html = html.replace("</body>", &livereload_script);
-                content = html.into_bytes();
+                content = inject_livereload(content, version.load(Ordering::SeqCst));
             }
 
             let header = Header::from_bytes("Content-Type", content_type)
@@ -359,6 +360,10 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
                         continue;
                     }
                 };
+                // Extensionless URLs get the same livereload injection as
+                // their .html equivalents (previously /guide never reloaded
+                // while /guide.html did)
+                let content = inject_livereload(content, version.load(Ordering::SeqCst));
                 let header = Header::from_bytes("Content-Type", "text/html; charset=utf-8")
                     .unwrap_or_else(|_| {
                         Header::from_bytes("Content-Type", "application/octet-stream").unwrap()
@@ -373,6 +378,32 @@ fn serve_book(source: &Path, port: u16, open_browser: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Inject the livereload polling script into an HTML page body
+fn inject_livereload(content: Vec<u8>, current_version: u64) -> Vec<u8> {
+    let livereload_script = format!(
+        r#"<script>
+(function(){{
+    var version={};
+    function checkReload(){{
+        fetch('/__livereload?v='+version)
+            .then(function(r){{return r.json()}})
+            .then(function(data){{
+                if(data.reload){{
+                    version=data.version;
+                    location.reload();
+                }}
+            }})
+            .catch(function(){{}});
+    }}
+    setInterval(checkReload,1000);
+}})();
+</script></body>"#,
+        current_version
+    );
+    let html = String::from_utf8_lossy(&content);
+    html.replace("</body>", &livereload_script).into_bytes()
 }
 
 /// Check that a path is safely contained within the allowed root directory.
@@ -574,8 +605,23 @@ fn update_self() -> Result<()> {
     }
     fs::rename(&current_exe, &backup_path)?;
 
-    // Move new executable to current location
-    fs::rename(&new_exe_path, &current_exe)?;
+    // Move new executable to current location. If this second rename fails
+    // the binary on PATH is already gone — restore the backup instead of
+    // leaving the user with no guidebook at all
+    if let Err(e) = fs::rename(&new_exe_path, &current_exe) {
+        let restore = fs::rename(&backup_path, &current_exe);
+        return Err(match restore {
+            Ok(()) => anyhow::anyhow!("Update failed ({}); previous binary was restored", e),
+            Err(re) => anyhow::anyhow!(
+                "Update failed ({}) AND restoring the backup failed ({}). \
+                 Recover manually: mv {} {}",
+                e,
+                re,
+                backup_path.display(),
+                current_exe.display()
+            ),
+        });
+    }
 
     // Remove backup
     let _ = fs::remove_file(&backup_path);

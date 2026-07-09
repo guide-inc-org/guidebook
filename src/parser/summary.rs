@@ -140,8 +140,10 @@ pub fn parse_summary(content: &str) -> Result<Summary> {
                 pending_item_text.clear();
             }
 
-            // Link
-            Event::Start(Tag::Link { dest_url, .. }) => {
+            // Link — the FIRST link in a list item wins; additional links in
+            // the same item are ignored (previously a second link silently
+            // overwrote the first, dropping its navigation entry entirely)
+            Event::Start(Tag::Link { dest_url, .. }) if current_link.is_none() => {
                 current_text.clear();
                 let path = dest_url.to_string();
                 let path = if path.is_empty() || path == "#" {
@@ -154,7 +156,10 @@ pub fn parse_summary(content: &str) -> Result<Summary> {
             }
             Event::End(TagEnd::Link) => {
                 if let Some((ref mut link_title, _)) = current_link {
-                    *link_title = current_text.trim().to_string();
+                    // Only the first link's text becomes the title
+                    if link_title.is_empty() {
+                        *link_title = current_text.trim().to_string();
+                    }
                 }
                 current_text.clear();
             }
@@ -503,5 +508,37 @@ mod tests {
         let content = format!("* [{}](test.md)\n", long_title);
         let result = parse_summary(&content);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_first_link_wins_with_two_links_in_item() {
+        // Regression: a second link in the same item overwrote the first,
+        // silently dropping its navigation entry
+        let content = "# Summary\n\n* [Old](old.md) → [New](new.md)\n";
+        let summary = parse_summary(content).unwrap();
+        let links: Vec<(String, Option<String>)> = summary
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                SummaryItem::Link { title, path, .. } => Some((title.clone(), path.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "Old");
+        assert_eq!(links[0].1.as_deref(), Some("old.md"));
+    }
+
+    #[test]
+    fn test_trailing_text_after_link_does_not_break_title() {
+        let content = "# Summary\n\n* [Page](page.md) (draft)\n";
+        let summary = parse_summary(content).unwrap();
+        match &summary.items[0] {
+            SummaryItem::Link { title, path, .. } => {
+                assert_eq!(title, "Page");
+                assert_eq!(path.as_deref(), Some("page.md"));
+            }
+            other => panic!("unexpected item: {:?}", other),
+        }
     }
 }

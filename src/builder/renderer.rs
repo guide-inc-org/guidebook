@@ -1032,55 +1032,47 @@ fn fix_md_extension(url: &str) -> String {
     }
 }
 
-/// Remove leading slashes from internal links
-/// Converts href="/path/to/file" → href="path/to/file"
-/// Skips protocol-relative URLs (//example.com) and external links
-fn remove_leading_slash_from_links(html: &str) -> String {
+/// True when the quote just pushed onto `result` opens an href/src attribute
+/// value. The quote itself must be excluded before checking — including it
+/// makes the ends_with() check structurally impossible to match.
+fn quote_opens_link_attr(result: &str, quote_char: char) -> bool {
+    let before = &result[..result.len() - quote_char.len_utf8()];
+    let tail: String = before
+        .chars()
+        .rev()
+        .take(5)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let tail = tail.to_ascii_lowercase();
+    tail.ends_with("href=") || tail.ends_with("src=")
+}
+
+/// Rewrite the value of every href/src attribute with `f`.
+/// Unterminated attribute values are emitted unchanged.
+fn map_link_attr_values(html: &str, f: impl Fn(String) -> String) -> String {
     let mut result = String::new();
     let mut chars = html.char_indices().peekable();
 
     while let Some((_, c)) = chars.next() {
         result.push(c);
 
-        // Check for href=" or src="
-        if c == '"' || c == '\'' {
+        if (c == '"' || c == '\'') && quote_opens_link_attr(&result, c) {
             let quote_char = c;
-            // Check if this is after href= or src= (check last 6 ASCII chars)
-            let suffix: String = result
-                .chars()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            let is_href_or_src =
-                suffix.to_lowercase().ends_with("href=") || suffix.to_lowercase().ends_with("src=");
-
-            if is_href_or_src {
-                // Collect the URL
-                let mut url = String::new();
-                for (_, ch) in chars.by_ref() {
-                    if ch == quote_char {
-                        // Check if URL starts with single / (not //)
-                        let processed_url = if url.starts_with('/') && !url.starts_with("//") {
-                            // Check if it's an internal link (not external)
-                            let lower = url.to_lowercase();
-                            if !lower.starts_with("/http://") && !lower.starts_with("/https://") {
-                                // Remove the leading slash
-                                url.chars().skip(1).collect()
-                            } else {
-                                url
-                            }
-                        } else {
-                            url
-                        };
-                        result.push_str(&processed_url);
-                        result.push(quote_char);
-                        break;
-                    }
-                    url.push(ch);
+            let mut url = String::new();
+            let mut closed = false;
+            for (_, ch) in chars.by_ref() {
+                if ch == quote_char {
+                    result.push_str(&f(url.clone()));
+                    result.push(quote_char);
+                    closed = true;
+                    break;
                 }
+                url.push(ch);
+            }
+            if !closed {
+                result.push_str(&url);
             }
         }
     }
@@ -1088,48 +1080,25 @@ fn remove_leading_slash_from_links(html: &str) -> String {
     result
 }
 
+/// Remove leading slashes from internal links
+/// Converts href="/path/to/file" → href="path/to/file"
+/// Skips protocol-relative URLs (//example.com) and external links
+fn remove_leading_slash_from_links(html: &str) -> String {
+    map_link_attr_values(html, |url| {
+        if url.starts_with('/') && !url.starts_with("//") {
+            let lower = url.to_lowercase();
+            if !lower.starts_with("/http://") && !lower.starts_with("/https://") {
+                return url.chars().skip(1).collect();
+            }
+        }
+        url
+    })
+}
+
 /// Convert backslashes to forward slashes in href and src attributes
 /// Handles Windows-style paths like href="path\to\file" → href="path/to/file"
 fn normalize_path_separators(html: &str) -> String {
-    let mut result = String::new();
-    let mut chars = html.char_indices().peekable();
-
-    while let Some((_, c)) = chars.next() {
-        result.push(c);
-
-        // Check for href=" or src="
-        if c == '"' || c == '\'' {
-            let quote_char = c;
-            // Check if this is after href= or src= (check last 6 ASCII chars)
-            let suffix: String = result
-                .chars()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            let is_href_or_src =
-                suffix.to_lowercase().ends_with("href=") || suffix.to_lowercase().ends_with("src=");
-
-            if is_href_or_src {
-                // Collect the URL and normalize backslashes
-                let mut url = String::new();
-                for (_, ch) in chars.by_ref() {
-                    if ch == quote_char {
-                        // Normalize backslashes to forward slashes
-                        let normalized_url = url.replace('\\', "/");
-                        result.push_str(&normalized_url);
-                        result.push(quote_char);
-                        break;
-                    }
-                    url.push(ch);
-                }
-            }
-        }
-    }
-
-    result
+    map_link_attr_values(html, |url| url.replace('\\', "/"))
 }
 
 /// Add target="_blank" rel="noopener noreferrer" to external links that don't have target attribute
@@ -1356,8 +1325,13 @@ fn convert_remaining_markdown_images(html: &str) -> String {
                     }
                 }
 
-                // Output as <img> tag
-                result.push_str(&format!(r#"<img src="{}" alt="{}">"#, url, alt));
+                // Output as <img> tag (escape quotes so alt/url text cannot
+                // break out of the attribute value)
+                result.push_str(&format!(
+                    r#"<img src="{}" alt="{}">"#,
+                    html_escape(&url),
+                    html_escape(&alt)
+                ));
             } else {
                 // Not an image, output as-is
                 result.push('!');
@@ -1400,17 +1374,29 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
     // Create the prefix to go back to root (e.g., "../../" for depth 2)
     let root_prefix: String = "../".repeat(depth);
 
-    // Find and replace href="..." patterns
+    // href: root-relative AND bare directory paths are book-root-relative
+    let result = adjust_attribute_urls(&result, r#"href=""#, &root_prefix, depth, true);
+    // src: only root-relative paths (/assets/x.png). Page-relative image
+    // paths (images/foo.png) are correct as written and must not be rewritten
+    adjust_attribute_urls(&result, r#"src=""#, &root_prefix, depth, false)
+}
+
+/// Adjust URLs in one attribute type (href="..." / src="...") for page depth
+fn adjust_attribute_urls(
+    html: &str,
+    attr_pattern: &str,
+    root_prefix: &str,
+    depth: usize,
+    convert_bare_dir_paths: bool,
+) -> String {
+    let result = html;
     let mut new_result = String::new();
     let mut last_end = 0;
-
-    // Process href="..." patterns
-    let href_pattern = r#"href=""#;
     let mut search_start = 0;
 
-    while let Some(href_pos) = result[search_start..].find(href_pattern) {
-        let abs_href_pos = search_start + href_pos;
-        let url_start = abs_href_pos + href_pattern.len();
+    while let Some(attr_pos) = result[search_start..].find(attr_pattern) {
+        let abs_attr_pos = search_start + attr_pos;
+        let url_start = abs_attr_pos + attr_pattern.len();
 
         // Find the closing quote
         if let Some(url_end_offset) = result[url_start..].find('"') {
@@ -1428,7 +1414,7 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
                 // Copy everything up to the URL
                 new_result.push_str(&result[last_end..url_start]);
                 // Add the root prefix + URL without leading slash
-                new_result.push_str(&root_prefix);
+                new_result.push_str(root_prefix);
                 new_result.push_str(&url[1..]); // Skip the leading /
                 last_end = url_end;
                 search_start = url_end + 1;
@@ -1438,7 +1424,8 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
             // Check if this is an internal link that needs conversion (no leading /)
             // Skip: external links (http/https), anchor-only (#), already relative (../ or ./), data URIs
             // Skip: same-directory links (no "/" in path) - these are already correct relative links
-            let needs_conversion = !url.is_empty()
+            let needs_conversion = convert_bare_dir_paths
+                && !url.is_empty()
                 && url.contains('/')  // Only convert links with directory paths
                 && !url.starts_with("http://")
                 && !url.starts_with("https://")
@@ -1455,7 +1442,7 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
                 // Copy everything up to the URL
                 new_result.push_str(&result[last_end..url_start]);
                 // Add the root prefix + original URL
-                new_result.push_str(&root_prefix);
+                new_result.push_str(root_prefix);
                 new_result.push_str(url);
                 last_end = url_end;
             }
@@ -1840,6 +1827,72 @@ sequenceDiagram
             html
         );
         assert!(!html.contains("chapter1.html"), "html: {}", html);
+    }
+
+    #[test]
+    fn test_normalize_path_separators_fires() {
+        // Regression: the href=/src= detection included the just-pushed quote
+        // in the suffix check, so it never matched and backslashes survived
+        let html =
+            r#"<a href="docs\sub\file.html">x</a> <img src="img\pic.png"> and text\with\backslash"#;
+        let fixed = normalize_path_separators(html);
+        assert!(fixed.contains(r#"href="docs/sub/file.html""#), "{}", fixed);
+        assert!(fixed.contains(r#"src="img/pic.png""#), "{}", fixed);
+        // Backslashes outside attributes stay untouched
+        assert!(fixed.contains(r"text\with\backslash"), "{}", fixed);
+    }
+
+    #[test]
+    fn test_remove_leading_slash_fires() {
+        // Same regression shape as normalize_path_separators
+        let html = r#"<a href="/guide/page.html">x</a><img src="/assets/pic.png"><a href="//cdn.example.com/x">y</a>"#;
+        let fixed = remove_leading_slash_from_links(html);
+        assert!(fixed.contains(r#"href="guide/page.html""#), "{}", fixed);
+        assert!(fixed.contains(r#"src="assets/pic.png""#), "{}", fixed);
+        // Protocol-relative URL untouched
+        assert!(fixed.contains(r#"href="//cdn.example.com/x""#), "{}", fixed);
+    }
+
+    #[test]
+    fn test_root_relative_img_src_depth_adjusted() {
+        // Regression: only href was depth-adjusted; root-relative <img src>
+        // stayed absolute and 404'd on nested pages / subpath hosting
+        let md = "![img](/assets/pic.png)\n\n[link](/api-docs/)\n";
+        let html = render_markdown_with_path(md, Some("Guide/Sub/Page.md"), false);
+        assert!(
+            html.contains(r#"src="../../assets/pic.png""#),
+            "src must be depth-adjusted: {}",
+            html
+        );
+        assert!(
+            html.contains(r#"href="../../api-docs/""#),
+            "href behavior unchanged: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_page_relative_img_src_untouched() {
+        // Page-relative image paths are correct as written — the bare-dir
+        // conversion applied to href must NOT be applied to src
+        let md = "![img](images/pic.png)\n";
+        let html = render_markdown_with_path(md, Some("Guide/Sub/Page.md"), false);
+        assert!(
+            html.contains(r#"src="images/pic.png""#),
+            "page-relative src must stay as written: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_remaining_markdown_image_escapes_quotes() {
+        let html = r#"<div>![weather "sunny"](icon.png)</div>"#;
+        let fixed = convert_remaining_markdown_images(html);
+        assert!(
+            fixed.contains(r#"alt="weather &quot;sunny&quot;""#),
+            "quotes in alt must be escaped: {}",
+            fixed
+        );
     }
 
     #[test]

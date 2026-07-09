@@ -128,6 +128,25 @@ fn get_prev_next_pages(
     (None, None)
 }
 
+/// Convert a source page path (.md / .adoc / .asciidoc) to its .html output
+/// path. Only a trailing extension is converted — a blanket .replace() would
+/// also rewrite mid-path occurrences (e.g. "v1.md.backup/notes.md").
+/// A trailing "#anchor" fragment is preserved.
+pub(crate) fn source_path_to_html(path: &str) -> String {
+    let (file_part, fragment) = match path.find('#') {
+        Some(pos) => (&path[..pos], &path[pos..]),
+        None => (path, ""),
+    };
+
+    for ext in [".md", ".adoc", ".asciidoc"] {
+        if let Some(stem) = file_part.strip_suffix(ext) {
+            return format!("{}.html{}", stem, fragment);
+        }
+    }
+
+    path.to_string()
+}
+
 /// Flatten summary items into a list of (html_path, title)
 fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
     let mut pages = Vec::new();
@@ -141,11 +160,7 @@ fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
         {
             if let Some(md_path) = path {
                 // Remove leading slash and convert extension to .html
-                let html_path = md_path
-                    .trim_start_matches('/')
-                    .replace(".md", ".html")
-                    .replace(".adoc", ".html")
-                    .replace(".asciidoc", ".html");
+                let html_path = source_path_to_html(md_path.trim_start_matches('/'));
                 pages.push((html_path, title.clone()));
             }
             // Recursively add children
@@ -177,12 +192,9 @@ fn generate_sidebar(
                     path.as_ref().map(|p| p.starts_with('/')).unwrap_or(false);
 
                 // Remove leading slash and convert extension to .html
-                let html_path = path.as_ref().map(|p| {
-                    p.trim_start_matches('/')
-                        .replace(".md", ".html")
-                        .replace(".adoc", ".html")
-                        .replace(".asciidoc", ".html")
-                });
+                let html_path = path
+                    .as_ref()
+                    .map(|p| source_path_to_html(p.trim_start_matches('/')));
                 let is_active = current_path
                     .map(|cp| html_path.as_ref().map(|hp| cp == hp).unwrap_or(false))
                     .unwrap_or(false);
@@ -216,10 +228,13 @@ fn generate_sidebar(
                     } else {
                         prefix.to_string()
                     };
+                    // Escape the href value too — the path comes from
+                    // SUMMARY.md and a raw quote would break out of the
+                    // attribute (title on the same line was already escaped)
                     html.push_str(&format!(
                         r#"<a href="{}{}">{}</a>"#,
                         href_prefix,
-                        hp,
+                        html_escape(hp),
                         html_escape(title)
                     ));
                 } else {
@@ -305,6 +320,8 @@ const PAGE_TEMPLATE: &str = r##"<!DOCTYPE html>
     {% if has_custom_style %}
     <link rel="stylesheet" href="{{ root_path }}gitbook/style.css">
     {% endif %}
+    <link rel="apple-touch-icon-precomposed" sizes="152x152" href="{{ root_path }}gitbook/images/apple-touch-icon-precomposed-152.png">
+    <link rel="shortcut icon" href="{{ root_path }}gitbook/images/favicon.ico" type="image/x-icon">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     {% if mermaid %}

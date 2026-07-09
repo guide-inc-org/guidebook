@@ -16,6 +16,12 @@ static WIDTH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"width\s*=\s*["']([^"']+)["']"#).unwrap());
 static HEIGHT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"height\s*=\s*["']([^"']+)["']"#).unwrap());
+// Attribute presence checks anchored to a preceding delimiter so that
+// stroke-width= / data-width= do not count as a width attribute
+static HAS_WIDTH_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[\s"']width\s*=\s*["']"#).unwrap());
+static HAS_HEIGHT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[\s"']height\s*=\s*["']"#).unwrap());
 
 /// Check if an SVG is an icon (has fill="currentColor")
 /// Icon SVGs should be kept inline to preserve their dynamic color behavior
@@ -34,6 +40,77 @@ fn generate_svg_filename(index: usize, output_dir: &Path) -> String {
     format!("assets/svg/{}", filename)
 }
 
+/// Find the next inline `<svg>...</svg>` element, handling NESTED `<svg>`
+/// tags (a naive non-greedy regex stops at the first `</svg>` and cuts a
+/// nested element in half, emitting invalid unclosed XML).
+///
+/// Returns byte offsets `(start, open_tag_end, element_end)`.
+fn find_svg_element(html: &str) -> Option<(usize, usize, usize)> {
+    let mut search = 0usize;
+
+    loop {
+        let rel = html[search..].find("<svg")?;
+        let start = search + rel;
+
+        // Must be a real svg tag: "<svg" followed by whitespace, '>' or '/'
+        let after = html[start + 4..].chars().next();
+        if !matches!(after, Some(c) if c.is_whitespace() || c == '>' || c == '/') {
+            search = start + 4;
+            continue;
+        }
+
+        // Locate the end of the opening tag
+        let open_tag_end = match html[start..].find('>') {
+            Some(p) => start + p + 1,
+            None => return None,
+        };
+
+        // Self-closing <svg ... />
+        if html[start..open_tag_end]
+            .trim_end_matches('>')
+            .trim_end()
+            .ends_with('/')
+        {
+            return Some((start, open_tag_end, open_tag_end));
+        }
+
+        // Scan forward for the matching close, tracking nesting depth
+        let mut depth = 1usize;
+        let mut pos = open_tag_end;
+        while depth > 0 {
+            let next_open = html[pos..].find("<svg").and_then(|o| {
+                let abs = pos + o;
+                let ch = html[abs + 4..].chars().next();
+                matches!(ch, Some(c) if c.is_whitespace() || c == '>' || c == '/').then_some(abs)
+            });
+            let next_close = html[pos..].find("</svg>").map(|c| pos + c);
+
+            match (next_open, next_close) {
+                (Some(o), Some(c)) if o < c => {
+                    // Nested opener (self-closing nested tags stay depth-neutral)
+                    let inner_end = html[o..].find('>').map(|p| o + p + 1).unwrap_or(html.len());
+                    if !html[o..inner_end]
+                        .trim_end_matches('>')
+                        .trim_end()
+                        .ends_with('/')
+                    {
+                        depth += 1;
+                    }
+                    pos = inner_end;
+                }
+                (_, Some(c)) => {
+                    depth -= 1;
+                    pos = c + "</svg>".len();
+                }
+                // Unclosed element — treat as not-an-element, keep HTML as-is
+                _ => return None,
+            }
+        }
+
+        return Some((start, open_tag_end, pos));
+    }
+}
+
 /// Externalize inline SVGs to separate files
 ///
 /// Finds all inline `<svg>...</svg>` elements in the HTML, writes them to separate files,
@@ -44,69 +121,59 @@ fn generate_svg_filename(index: usize, output_dir: &Path) -> String {
 /// # Arguments
 /// * `html` - The HTML content to process
 /// * `output_dir` - The directory where SVG files will be written
+/// * `root_prefix` - Relative prefix from the page to the output root
+///   ("./" at root, "../../" at depth 2) so nested pages resolve the file
 ///
 /// # Returns
 /// The modified HTML with inline SVGs replaced by img tags
-pub fn externalize_inline_svg(html: &str, output_dir: &Path) -> Result<String> {
-    // Regex to match inline SVG elements
-    // Using (?s) flag for dotall mode to match across newlines
-    let svg_regex = Regex::new(r"(?s)<svg([^>]*)>(.*?)</svg>")?;
-
-    let mut result = html.to_string();
+pub fn externalize_inline_svg(html: &str, output_dir: &Path, root_prefix: &str) -> Result<String> {
+    let mut result = String::new();
+    let mut rest = html;
     let mut svg_index = 0;
-    let mut offset: i64 = 0;
 
-    for caps in svg_regex.captures_iter(html) {
-        let full_match = caps.get(0).unwrap();
-        let svg_attrs = &caps[1];
-        let svg_inner = &caps[2];
+    while let Some((start, open_tag_end, end)) = find_svg_element(rest) {
+        result.push_str(&rest[..start]);
+        let svg_content = &rest[start..end];
+        // Attributes sit between "<svg" and the closing '>' of the opening tag
+        let svg_attrs = rest[start + 4..open_tag_end - 1].trim_end_matches('/');
 
-        // Reconstruct full SVG content
-        let svg_content = format!("<svg{}>{}</svg>", svg_attrs, svg_inner);
+        if is_icon_svg(svg_content) {
+            result.push_str(svg_content);
+        } else {
+            // Generate filename and path
+            let relative_path = generate_svg_filename(svg_index, output_dir);
+            let svg_file_path = output_dir.join(&relative_path);
 
-        // Skip icon SVGs
-        if is_icon_svg(&svg_content) {
-            continue;
+            // Ensure parent directory exists
+            if let Some(parent) = svg_file_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            // Write SVG content to file
+            fs::write(&svg_file_path, svg_content)?;
+
+            // Extract width and height from SVG attributes if present
+            let width = WIDTH_REGEX.captures(svg_attrs).map(|c| c[1].to_string());
+            let height = HEIGHT_REGEX.captures(svg_attrs).map(|c| c[1].to_string());
+
+            // Build replacement img tag
+            let mut img_tag = format!(r#"<img src="{}{}""#, root_prefix, relative_path);
+            if let Some(w) = width {
+                img_tag.push_str(&format!(r#" width="{}""#, w));
+            }
+            if let Some(h) = height {
+                img_tag.push_str(&format!(r#" height="{}""#, h));
+            }
+            img_tag.push_str(r#" alt="SVG image">"#);
+
+            result.push_str(&img_tag);
+            svg_index += 1;
         }
 
-        // Generate filename and path
-        let relative_path = generate_svg_filename(svg_index, output_dir);
-        let svg_file_path = output_dir.join(&relative_path);
-
-        // Ensure parent directory exists
-        if let Some(parent) = svg_file_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Write SVG content to file
-        fs::write(&svg_file_path, &svg_content)?;
-
-        // Extract width and height from SVG attributes if present
-        let width = WIDTH_REGEX.captures(svg_attrs).map(|c| c[1].to_string());
-        let height = HEIGHT_REGEX.captures(svg_attrs).map(|c| c[1].to_string());
-
-        // Build replacement img tag
-        let mut img_tag = format!(r#"<img src="{}""#, relative_path);
-        if let Some(w) = width {
-            img_tag.push_str(&format!(r#" width="{}""#, w));
-        }
-        if let Some(h) = height {
-            img_tag.push_str(&format!(r#" height="{}""#, h));
-        }
-        img_tag.push_str(r#" alt="SVG image">"#);
-
-        // Calculate adjusted positions
-        let start = (full_match.start() as i64 + offset) as usize;
-        let end = (full_match.end() as i64 + offset) as usize;
-
-        // Replace in result
-        result.replace_range(start..end, &img_tag);
-
-        // Update offset
-        offset += img_tag.len() as i64 - (full_match.end() - full_match.start()) as i64;
-        svg_index += 1;
+        rest = &rest[end..];
     }
 
+    result.push_str(rest);
     Ok(result)
 }
 
@@ -156,15 +223,21 @@ pub fn inline_svg_files(html: &str, base_dir: &Path) -> Result<String> {
         let width = WIDTH_REGEX.captures(&attrs).map(|c| c[1].to_string());
         let height = HEIGHT_REGEX.captures(&attrs).map(|c| c[1].to_string());
 
-        // Modify SVG to include width/height if specified in img tag
+        // Modify SVG to include width/height if specified in img tag.
+        // Only the ROOT opening tag counts — a naive whole-file contains()
+        // check false-positives on child elements (<rect width=...>) and the
+        // img tag's size is then silently dropped
         let mut modified_svg = svg_content.clone();
+        let root_tag_end = modified_svg.find('>').map(|p| p + 1).unwrap_or(0);
+        let root_has_width = HAS_WIDTH_REGEX.is_match(&modified_svg[..root_tag_end]);
+        let root_has_height = HAS_HEIGHT_REGEX.is_match(&modified_svg[..root_tag_end]);
         if let Some(w) = width {
-            if !modified_svg.contains("width=") {
+            if !root_has_width {
                 modified_svg = modified_svg.replacen("<svg", &format!(r#"<svg width="{}""#, w), 1);
             }
         }
         if let Some(h) = height {
-            if !modified_svg.contains("height=") {
+            if !root_has_height {
                 modified_svg = modified_svg.replacen("<svg", &format!(r#"<svg height="{}""#, h), 1);
             }
         }
@@ -207,10 +280,10 @@ mod tests {
 <p>Some text</p>
 </body></html>"#;
 
-        let result = externalize_inline_svg(html, output_dir).unwrap();
+        let result = externalize_inline_svg(html, output_dir, "./").unwrap();
 
         // Should replace SVG with img tag
-        assert!(result.contains(r#"<img src="assets/svg/inline-0.svg""#));
+        assert!(result.contains(r#"<img src="./assets/svg/inline-0.svg""#));
         assert!(result.contains(r#"width="100""#));
         assert!(result.contains(r#"height="100""#));
         assert!(!result.contains("<circle"));
@@ -231,7 +304,7 @@ mod tests {
 <svg fill="currentColor"><path d="M10 10"/></svg>
 </body></html>"#;
 
-        let result = externalize_inline_svg(html, output_dir).unwrap();
+        let result = externalize_inline_svg(html, output_dir, "./").unwrap();
 
         // Icon SVG should remain inline
         assert!(result.contains(r#"fill="currentColor""#));
@@ -308,12 +381,71 @@ mod tests {
 <svg id="svg2"><rect width="20"/></svg>
 </body></html>"#;
 
-        let result = externalize_inline_svg(html, output_dir).unwrap();
+        let result = externalize_inline_svg(html, output_dir, "./").unwrap();
 
         // Both SVGs should be externalized
         assert!(result.contains("inline-0.svg"));
         assert!(result.contains("inline-1.svg"));
         assert!(!result.contains("<circle"));
         assert!(!result.contains("<rect"));
+    }
+
+    #[test]
+    fn test_externalize_nested_svg_kept_whole() {
+        // Regression: a non-greedy regex cut nested <svg> elements at the
+        // FIRST </svg>, writing unclosed XML and leaving debris in the HTML
+        let temp_dir = tempdir().unwrap();
+        let output_dir = temp_dir.path();
+
+        let html = r#"<svg width="200" height="200" viewBox="0 0 200 200">
+  <svg x="10" y="10" width="50" height="50"><rect width="50" height="50"/></svg>
+  <circle cx="100" cy="100" r="80"/>
+</svg>"#;
+
+        let result = externalize_inline_svg(html, output_dir, "./").unwrap();
+
+        // Exactly one img tag; no leftover svg debris in the HTML
+        assert_eq!(result.matches("<img").count(), 1, "{}", result);
+        assert!(!result.contains("</svg>"), "no debris: {}", result);
+        assert!(!result.contains("<circle"), "{}", result);
+
+        // The written file must contain the WHOLE element (balanced tags)
+        let svg_content = fs::read_to_string(output_dir.join("assets/svg/inline-0.svg")).unwrap();
+        assert_eq!(svg_content.matches("<svg").count(), 2);
+        assert_eq!(svg_content.matches("</svg>").count(), 2);
+        assert!(svg_content.contains("<circle"));
+    }
+
+    #[test]
+    fn test_externalize_nested_page_prefix() {
+        let temp_dir = tempdir().unwrap();
+        let html = r#"<svg width="10"><rect width="10"/></svg>"#;
+        let result = externalize_inline_svg(html, temp_dir.path(), "../../").unwrap();
+        assert!(
+            result.contains(r#"<img src="../../assets/svg/inline-0.svg""#),
+            "{}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_inline_svg_child_width_does_not_block_root_injection() {
+        // Regression: a whole-file contains("width=") check false-positived
+        // on child elements, so the img tag's size never got applied
+        let temp_dir = tempdir().unwrap();
+        let base_dir = temp_dir.path();
+
+        let svg_content = r#"<svg viewBox="0 0 400 300"><rect width="400" height="300"/></svg>"#;
+        fs::write(base_dir.join("chart.svg"), svg_content).unwrap();
+
+        let html = r#"<img src="chart.svg" width="100" height="75">"#;
+        let result = inline_svg_files(html, base_dir).unwrap();
+
+        assert!(
+            result.contains(r#"<svg width="100""#)
+                || result.contains(r#"<svg height="75" width="100""#),
+            "img size must be injected into the root svg tag: {}",
+            result
+        );
     }
 }

@@ -131,18 +131,31 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
     let mut in_script = false;
     let mut no_glossary_stack: Vec<String> = Vec::new(); // Stack of tag names with no-glossary class
     let mut tag_content = String::new();
+    // Quote character of the attribute value we are currently inside
+    // (a '>' inside a quoted attribute value does not close the tag)
+    let mut attr_quote: Option<char> = None;
 
     while let Some((i, c)) = chars.next() {
         // Check if we're entering an HTML tag
-        if c == '<' {
+        if c == '<' && !in_tag {
             in_tag = true;
             tag_content.clear();
+            attr_quote = None;
             result.push(c);
             continue;
         }
 
+        // Track quoted attribute values inside tags
+        if in_tag {
+            match attr_quote {
+                Some(q) if c == q => attr_quote = None,
+                None if c == '"' || c == '\'' => attr_quote = Some(c),
+                _ => {}
+            }
+        }
+
         // Check if we're exiting an HTML tag
-        if c == '>' && in_tag {
+        if c == '>' && in_tag && attr_quote.is_none() {
             in_tag = false;
             result.push(c);
 
@@ -191,10 +204,14 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
             }
 
             // no-glossary class detection (can be on any element)
-            // Check for opening tags with no-glossary class
+            // Check for opening tags with no-glossary class.
+            // Void elements (<img>, <br>, ...) and self-closing tags never get
+            // a closing tag — pushing them would leave the stack non-empty and
+            // silently disable the glossary for the rest of the page.
             if !tag_lower.starts_with('/')
                 && tag_lower.contains("class=")
                 && tag_lower.contains("no-glossary")
+                && !tag_lower.trim_end().ends_with('/')
             {
                 // Extract the tag name (first word before space or end)
                 let tag_name = tag_lower
@@ -202,7 +219,7 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
                     .next()
                     .unwrap_or("")
                     .to_string();
-                if !tag_name.is_empty() {
+                if !tag_name.is_empty() && !is_void_element(&tag_name) {
                     no_glossary_stack.push(tag_name);
                 }
             }
@@ -280,6 +297,27 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
     }
 
     result
+}
+
+/// HTML void elements — they never have a closing tag
+fn is_void_element(tag_name: &str) -> bool {
+    matches!(
+        tag_name,
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
 }
 
 /// Script class used for word-boundary detection
@@ -624,6 +662,50 @@ Representational State Transfer
             "term inside kanji compound should not match: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_gt_inside_attribute_value_does_not_close_tag() {
+        // Regression: a '>' inside a quoted attribute value was treated as
+        // the tag close, so the rest of the attribute became "text" and got
+        // glossary spans injected inside the attribute value
+        let glossary = Glossary::parse("## API\nInterface").unwrap();
+        let html = r#"<div title="see notes>API here">text about API</div>"#;
+        let result = apply_glossary(html, &glossary);
+        assert!(
+            result.contains(r#"title="see notes>API here""#),
+            "attribute value must stay intact: {}",
+            result
+        );
+        // The API in the body text still gets wrapped
+        assert!(
+            result.contains(r#"about <span class="glossary-term""#),
+            "body text API must still be wrapped: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_no_glossary_on_void_element_does_not_stick() {
+        // Regression: <img class="no-glossary"> pushed onto the stack and
+        // never popped, silently disabling the glossary for the whole page
+        let glossary = Glossary::parse("## API\nInterface").unwrap();
+        let html =
+            r#"<img src="pic.png" class="no-glossary" alt="d"/><p>This API should be wrapped.</p>"#;
+        let result = apply_glossary(html, &glossary);
+        assert!(
+            result.contains("glossary-term"),
+            "glossary must not be disabled after a void no-glossary element: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_no_glossary_self_closing_div_does_not_stick() {
+        let glossary = Glossary::parse("## API\nInterface").unwrap();
+        let html = r#"<div class="no-glossary"/><p>API here.</p>"#;
+        let result = apply_glossary(html, &glossary);
+        assert!(result.contains("glossary-term"), "{}", result);
     }
 
     #[test]

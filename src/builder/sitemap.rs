@@ -98,7 +98,7 @@ fn render_item(html: &mut String, item: &SummaryItem, depth: u8, max_depth: Opti
                 html.push_str(&format!(
                     r#"<div class="{}"><a href="{}">{}</a></div>"#,
                     class,
-                    html_path,
+                    html_escape(&html_path),
                     html_escape(title)
                 ));
             } else {
@@ -168,7 +168,7 @@ fn render_children(html: &mut String, children: &[SummaryItem], depth: u8, max_d
                 let html_path = to_html_path(p);
                 html.push_str(&format!(
                     r#"<a href="{}">{}</a>"#,
-                    html_path,
+                    html_escape(&html_path),
                     html_escape(title)
                 ));
             } else {
@@ -190,9 +190,7 @@ fn render_children(html: &mut String, children: &[SummaryItem], depth: u8, max_d
 }
 
 fn to_html_path(path: &str) -> String {
-    path.replace(".md", ".html")
-        .replace(".adoc", ".html")
-        .replace(".asciidoc", ".html")
+    crate::builder::template::source_path_to_html(path)
         .trim_start_matches('/')
         .to_string()
 }
@@ -343,5 +341,37 @@ mod tests {
         let options = SitemapOptions::parse("{{!SITEMAP}}");
         assert_eq!(options.columns, 3);
         assert_eq!(options.depth, None);
+    }
+
+    #[test]
+    fn test_sitemap_href_is_escaped() {
+        // Regression: title was escaped but href was not
+        let summary = Summary {
+            title: None,
+            items: vec![SummaryItem::Link {
+                title: "Page".to_string(),
+                path: Some(r#"weird" onmouseover="x/page.md"#.to_string()),
+                children: Vec::new(),
+            }],
+        };
+        let html = generate_sitemap_html(&summary, &SitemapOptions::default());
+        assert!(
+            !html.contains(r#"onmouseover="x"#),
+            "raw quote must not break out of href: {}",
+            html
+        );
+        assert!(html.contains("&quot;"), "{}", html);
+    }
+
+    #[test]
+    fn test_to_html_path_only_converts_extension() {
+        // Regression: .replace(".md", ...) hit mid-path occurrences
+        assert_eq!(to_html_path("guide.md"), "guide.html");
+        assert_eq!(to_html_path("guide.md#setup"), "guide.html#setup");
+        assert_eq!(
+            to_html_path("v1.md.backup/notes.md"),
+            "v1.md.backup/notes.html"
+        );
+        assert_eq!(to_html_path("api.adoc"), "api.html");
     }
 }

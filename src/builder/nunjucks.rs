@@ -32,7 +32,6 @@
 
 use crate::parser::BookConfig;
 use anyhow::{Context, Result};
-use regex::Regex;
 use tera::{Context as TeraContext, Tera};
 
 /// Process Nunjucks templates in Markdown content
@@ -74,19 +73,50 @@ fn has_template_syntax(content: &str) -> bool {
 
 /// Find all protected regions in the content (fenced code blocks)
 /// These regions should not have template processing applied
+///
+/// Handles ``` and ~~~ fences, longer fence runs (````), and fences indented
+/// inside list items. Limitation: pure 4-space indented code blocks are not
+/// detected (that requires full markdown block parsing).
 fn find_protected_regions(content: &str) -> Vec<(usize, usize)> {
     let mut regions = Vec::new();
+    // (region_start_byte, fence_char, fence_len) while inside a fence
+    let mut open: Option<(usize, char, usize)> = None;
+    let mut pos = 0usize;
 
-    // Find fenced code blocks (``` ... ```)
-    // Use a more robust approach that handles multi-line content
-    let fenced_re = Regex::new(r"(?m)^```[^\n]*\n[\s\S]*?^```").unwrap();
-    for m in fenced_re.find_iter(content) {
-        regions.push((m.start(), m.end()));
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+
+        match open {
+            Some((start, fence_char, fence_len)) => {
+                // Closing fence: same char, at least as long, alone on the line
+                let run = trimmed.chars().take_while(|&c| c == fence_char).count();
+                if run >= fence_len && trimmed.trim_end().chars().all(|c| c == fence_char) {
+                    regions.push((start, pos + line.len()));
+                    open = None;
+                }
+            }
+            None => {
+                let first = trimmed.chars().next();
+                if matches!(first, Some('`') | Some('~')) {
+                    let fence_char = first.unwrap();
+                    let run = trimmed.chars().take_while(|&c| c == fence_char).count();
+                    // Info strings after ``` must not contain backticks
+                    let info_ok = fence_char == '~' || !trimmed[run..].contains('`');
+                    if run >= 3 && info_ok {
+                        open = Some((pos, fence_char, run));
+                    }
+                }
+            }
+        }
+
+        pos += line.len();
     }
 
-    // Also handle indented code blocks (4 spaces or tab at start)
-    // These are less common but should be protected too
-    // Note: This is a simplified check; full markdown parsing would be more accurate
+    // An unclosed fence protects everything to the end of the document
+    // (matches how markdown renders it)
+    if let Some((start, _, _)) = open {
+        regions.push((start, content.len()));
+    }
 
     regions
 }
@@ -486,6 +516,52 @@ End"#;
         // Inside code blocks should be preserved
         assert!(result.contains("{{ book.name }} in code"));
         assert!(result.contains(r#""{{ book.name }}""#));
+    }
+
+    #[test]
+    fn test_indented_fence_in_list_is_protected() {
+        // Regression: the fence regex only matched column-0 fences, so code
+        // blocks indented inside list items were template-processed
+        let mut vars = HashMap::new();
+        vars.insert("token".to_string(), serde_json::json!("SECRET"));
+
+        let config = create_test_config(vars);
+        let content =
+            "- Step 1\n  ```bash\n  {{ book.token }}\n  ```\n\nOutside: {{ book.token }}\n";
+        let result = process_nunjucks_templates(content, &config).unwrap();
+
+        assert!(
+            result.contains("{{ book.token }}"),
+            "indented code block must stay literal: {}",
+            result
+        );
+        assert!(result.contains("Outside: SECRET"), "{}", result);
+    }
+
+    #[test]
+    fn test_tilde_fence_is_protected() {
+        let mut vars = HashMap::new();
+        vars.insert("name".to_string(), serde_json::json!("X"));
+
+        let config = create_test_config(vars);
+        let content = "~~~js\n{{ book.name }}\n~~~\n\n{{ book.name }}\n";
+        let result = process_nunjucks_templates(content, &config).unwrap();
+
+        assert!(result.contains("{{ book.name }}"), "{}", result);
+        assert!(result.contains("\nX"), "{}", result);
+    }
+
+    #[test]
+    fn test_longer_backtick_fence_protected() {
+        let mut vars = HashMap::new();
+        vars.insert("name".to_string(), serde_json::json!("X"));
+
+        let config = create_test_config(vars);
+        // ```` fence containing a ``` line — must close only at ````
+        let content = "````\n```\n{{ book.name }}\n```\n````\n";
+        let result = process_nunjucks_templates(content, &config).unwrap();
+
+        assert!(result.contains("{{ book.name }}"), "{}", result);
     }
 
     #[test]
