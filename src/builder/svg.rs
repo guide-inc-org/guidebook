@@ -60,10 +60,7 @@ fn find_svg_element(html: &str) -> Option<(usize, usize, usize)> {
         }
 
         // Locate the end of the opening tag
-        let open_tag_end = match html[start..].find('>') {
-            Some(p) => start + p + 1,
-            None => return None,
-        };
+        let open_tag_end = start + html[start..].find('>')? + 1;
 
         // Self-closing <svg ... />
         if html[start..open_tag_end]
