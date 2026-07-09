@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - Headings: duplicate headings get deduplicated ids (`概要`, `概要-1`, `概要-2` — github-slugger behavior); TOC extraction mirrors the same logic (including custom `{#id}`) so sidebar anchors always match
 
 ### Security
+- Update vulnerable transitive dependencies (14 RustSec advisories): aws-lc-sys 0.42.0, rustls-webpki 0.103.13, quinn-proto 0.11.16, tar 0.4.46, crossbeam-epoch 0.9.20, rand, anyhow (Cargo.lock only)
 - Add path traversal protection in dev server (canonicalize check against temp_dir)
 - Add image download size limit (50 MB max)
 - Add SHA256 checksum verification for self-update binary downloads
