@@ -92,38 +92,47 @@ fn find_protected_regions(content: &str) -> Vec<(usize, usize)> {
 }
 
 /// Process content with protected regions
-/// Splits content into protected and unprotected segments, only processing unprotected ones
+///
+/// Each protected region (code block) is swapped for a placeholder token,
+/// the WHOLE document is rendered once, then the original blocks are
+/// restored. Rendering the document in one pass keeps template blocks that
+/// span a code block (e.g. `{% if %}` before / `{% endif %}` after) working;
+/// the previous approach of rendering the segments independently failed on
+/// them and the whole page fell back to unprocessed content.
 fn process_with_protected_regions(
     content: &str,
     config: &BookConfig,
     protected_regions: &[(usize, usize)],
 ) -> Result<String> {
-    let mut result = String::new();
+    let mut template = String::new();
+    let mut blocks: Vec<&str> = Vec::new();
     let mut last_end = 0;
 
     for (start, end) in protected_regions {
-        // Process the unprotected segment before this code block
-        if *start > last_end {
-            let segment = &content[last_end..*start];
-            let processed = render_template(segment, config)
-                .with_context(|| format!("Template error in content before position {}", start))?;
-            result.push_str(&processed);
-        }
-
-        // Add the protected region (code block) as-is
-        result.push_str(&content[*start..*end]);
+        template.push_str(&content[last_end..*start]);
+        template.push_str(&protected_placeholder(blocks.len()));
+        blocks.push(&content[*start..*end]);
         last_end = *end;
     }
+    template.push_str(&content[last_end..]);
 
-    // Process any remaining content after the last protected region
-    if last_end < content.len() {
-        let segment = &content[last_end..];
-        let processed = render_template(segment, config)
-            .with_context(|| "Template error in content after last code block")?;
-        result.push_str(&processed);
+    let mut rendered = render_template(&template, config)?;
+
+    // Restore code blocks. replace() (not replacen) so blocks duplicated by
+    // {% for %} loops are restored at every occurrence; blocks dropped by a
+    // false {% if %} branch simply have no occurrence to restore.
+    for (idx, block) in blocks.iter().enumerate() {
+        rendered = rendered.replace(&protected_placeholder(idx), block);
     }
 
-    Ok(result)
+    Ok(rendered)
+}
+
+/// Placeholder token for a protected region.
+/// U+F8FF is a private-use character that does not occur in normal content
+/// and contains no template syntax, so Tera passes it through untouched.
+fn protected_placeholder(idx: usize) -> String {
+    format!("\u{F8FF}GBPROTECTED{}\u{F8FF}", idx)
 }
 
 /// Render a template string using Tera
@@ -477,6 +486,72 @@ End"#;
         // Inside code blocks should be preserved
         assert!(result.contains("{{ book.name }} in code"));
         assert!(result.contains(r#""{{ book.name }}""#));
+    }
+
+    #[test]
+    fn test_template_block_spanning_code_block() {
+        // Regression: segments were rendered independently, so an {% if %}
+        // opened before a code block and closed after it was a parse error
+        // and the whole page fell through unprocessed
+        let mut vars = HashMap::new();
+        vars.insert("show".to_string(), serde_json::json!(true));
+
+        let config = create_test_config(vars);
+        let content = r#"{% if book.show %}
+```
+code sample with {{ book.show }}
+```
+{% endif %}
+
+After"#;
+        let result = process_nunjucks_templates(content, &config).unwrap();
+
+        // Code block content preserved verbatim (template syntax untouched)
+        assert!(result.contains("code sample with {{ book.show }}"));
+        assert!(result.contains("After"));
+        assert!(!result.contains("{% if"));
+    }
+
+    #[test]
+    fn test_template_block_spanning_code_block_false_branch() {
+        let mut vars = HashMap::new();
+        vars.insert("show".to_string(), serde_json::json!(false));
+
+        let config = create_test_config(vars);
+        let content = r#"Before
+
+{% if book.show %}
+```
+hidden code
+```
+{% endif %}
+
+After"#;
+        let result = process_nunjucks_templates(content, &config).unwrap();
+
+        assert!(result.contains("Before"));
+        assert!(result.contains("After"));
+        // The code block inside the false branch must disappear entirely,
+        // including its placeholder
+        assert!(!result.contains("hidden code"));
+        assert!(!result.contains('\u{F8FF}'));
+    }
+
+    #[test]
+    fn test_code_block_duplicated_by_for_loop() {
+        let mut vars = HashMap::new();
+        vars.insert("items".to_string(), serde_json::json!(["a", "b"]));
+
+        let config = create_test_config(vars);
+        let content = r#"{% for item in book.items %}
+```
+sample
+```
+{% endfor %}"#;
+        let result = process_nunjucks_templates(content, &config).unwrap();
+
+        assert_eq!(result.matches("sample").count(), 2);
+        assert!(!result.contains('\u{F8FF}'));
     }
 
     // === Edge Cases ===

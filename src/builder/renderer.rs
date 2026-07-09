@@ -25,21 +25,28 @@ pub fn extract_headings(content: &str) -> Vec<TocItem> {
     let mut headings = Vec::new();
     let mut in_heading: Option<HeadingLevel> = None;
     let mut heading_text = String::new();
+    let mut custom_heading_id: Option<String> = None;
+    // Must mirror the slug assignment in render_markdown_internal exactly
+    // (dedup counters consume slugs for ALL heading levels, not just h2-h4)
+    let mut used_slugs: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     for event in parser {
         match &event {
-            Event::Start(Tag::Heading { level, .. }) => {
+            Event::Start(Tag::Heading { level, id, .. }) => {
                 in_heading = Some(*level);
                 heading_text.clear();
+                custom_heading_id = id.as_ref().map(|s| s.to_string());
             }
             Event::Text(text) if in_heading.is_some() => {
                 heading_text.push_str(text);
             }
             Event::End(TagEnd::Heading(level)) if in_heading.is_some() => {
                 let level_num = heading_level_to_num(*level);
+                let id = custom_heading_id
+                    .take()
+                    .unwrap_or_else(|| dedupe_slug(slugify(&heading_text), &mut used_slugs));
                 // Only include h2, h3, h4 in TOC (skip h1 which is page title)
                 if (2..=4).contains(&level_num) {
-                    let id = slugify(&heading_text);
                     headings.push(TocItem {
                         level: level_num,
                         text: heading_text.clone(),
@@ -125,6 +132,8 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     let mut in_heading: Option<HeadingLevel> = None;
     let mut heading_text = String::new();
     let mut custom_heading_id: Option<String> = None; // Store custom ID from {#id} syntax
+                                                      // Track used slugs so duplicate headings get unique ids (-1, -2, ...)
+    let mut used_slugs: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut events: Vec<Event> = Vec::new();
 
     for event in parser {
@@ -169,9 +178,10 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
             // End of heading: inject ID
             Event::End(TagEnd::Heading(level)) if in_heading.is_some() => {
                 // Use custom ID if provided, otherwise generate from heading text
+                // (deduplicated: same text yields id, id-1, id-2, ...)
                 let id = custom_heading_id
                     .take()
-                    .unwrap_or_else(|| slugify(&heading_text));
+                    .unwrap_or_else(|| dedupe_slug(slugify(&heading_text), &mut used_slugs));
                 let level_num = heading_level_to_num(*level);
                 // Pop the heading content and rebuild with ID
                 let mut heading_events = Vec::new();
@@ -259,6 +269,26 @@ fn slugify(text: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Deduplicate a slug against previously used ones (github-slugger behavior:
+/// "foo", "foo-1", "foo-2", ...). Skips suffixes that collide with slugs
+/// that literally occurred earlier.
+fn dedupe_slug(slug: String, used: &mut std::collections::HashMap<String, usize>) -> String {
+    if !used.contains_key(&slug) {
+        used.insert(slug.clone(), 0);
+        return slug;
+    }
+
+    let mut n = used[&slug] + 1;
+    let mut candidate = format!("{}-{}", slug, n);
+    while used.contains_key(&candidate) {
+        n += 1;
+        candidate = format!("{}-{}", slug, n);
+    }
+    used.insert(slug, n);
+    used.insert(candidate.clone(), 0);
+    candidate
 }
 
 fn html_escape(s: &str) -> String {
@@ -440,7 +470,103 @@ fn convert_footnote_definitions_inline(content: &str, hardbreaks: bool) -> Strin
 
 /// Convert footnote references [^n] to placeholder (before parsing)
 /// Placeholder format: %%FNREF_n%% - will be converted to HTML after markdown parsing
+///
+/// Skips fenced code blocks and inline code spans so that literal text like
+/// the regex character class `[^abc]` is not turned into a footnote reference.
 fn convert_footnote_references_to_placeholder(content: &str) -> String {
+    let mut result = String::new();
+    // (fence_char, fence_length) while inside a fenced code block
+    let mut in_fence: Option<(char, usize)> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+
+        if let Some((fence_char, fence_len)) = in_fence {
+            // Closing fence: a run of the same char, at least as long, alone on the line
+            let run = trimmed.chars().take_while(|&c| c == fence_char).count();
+            if run >= fence_len && trimmed.trim_end().chars().all(|c| c == fence_char) {
+                in_fence = None;
+            }
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let fence_char = trimmed.chars().next().unwrap();
+            let fence_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+            in_fence = Some((fence_char, fence_len));
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        result.push_str(&convert_footnote_refs_in_line(line));
+        result.push('\n');
+    }
+
+    // lines() drops the trailing newline info; restore original ending
+    if !content.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
+/// Convert footnote references in a single line, leaving inline code spans untouched
+fn convert_footnote_refs_in_line(line: &str) -> String {
+    let mut result = String::new();
+    let mut rest = line;
+
+    loop {
+        match find_inline_code_span(rest) {
+            Some((start, end)) => {
+                result.push_str(&convert_footnote_refs_in_text(&rest[..start]));
+                result.push_str(&rest[start..end]); // code span verbatim
+                rest = &rest[end..];
+            }
+            None => {
+                result.push_str(&convert_footnote_refs_in_text(rest));
+                break;
+            }
+        }
+    }
+
+    result
+}
+
+/// Find the next inline code span (a run of N backticks closed by an
+/// equal-length run, per CommonMark). Returns the byte range including
+/// the backticks, or None if no closed span exists.
+fn find_inline_code_span(s: &str) -> Option<(usize, usize)> {
+    let bytes = s.as_bytes();
+    let mut open = s.find('`')?;
+
+    loop {
+        let open_len = bytes[open..].iter().take_while(|&&b| b == b'`').count();
+        // Search for a closing run of exactly open_len backticks
+        let mut idx = open + open_len;
+        while idx < bytes.len() {
+            if bytes[idx] == b'`' {
+                let run_start = idx;
+                while idx < bytes.len() && bytes[idx] == b'`' {
+                    idx += 1;
+                }
+                if idx - run_start == open_len {
+                    return Some((open, idx));
+                }
+            } else {
+                idx += 1;
+            }
+        }
+        // This opener never closes; try the next backtick run after it
+        let next = s[open + open_len..].find('`')?;
+        open = open + open_len + next;
+    }
+}
+
+/// Convert footnote references [^n] to placeholders in plain (non-code) text
+fn convert_footnote_refs_in_text(content: &str) -> String {
     let mut result = String::new();
     let mut chars = content.char_indices().peekable();
 
@@ -836,26 +962,74 @@ fn fix_image_paths_with_spaces(content: &str) -> String {
 }
 
 fn fix_relative_links(html: &str) -> String {
-    // Replace .md links with .html
-    // Pattern: href="...*.md" or href='...*.md'
-    let mut result = html.to_string();
+    // Replace .md links with .html, but ONLY inside href attribute values.
+    // A blind string replace would also rewrite occurrences in visible text,
+    // e.g. `chapter1.md#section` inside <code>.
+    let mut result = String::new();
+    let mut chars = html.char_indices().peekable();
+    let mut in_tag = false;
 
-    // Simple regex-like replacement for .md links
-    // This handles href="path.md" and href="path.md#anchor"
-    let patterns = [
-        (r#".md""#, r#".html""#),
-        (r#".md#"#, r#".html#"#),
-        (r#".md'"#, r#".html'"#),
-    ];
+    while let Some((_, c)) = chars.next() {
+        result.push(c);
 
-    for (from, to) in patterns {
-        result = result.replace(from, to);
+        if c == '<' {
+            in_tag = true;
+            continue;
+        }
+        if c == '>' {
+            in_tag = false;
+            continue;
+        }
+
+        // Attribute values only exist inside tags; this keeps literal text
+        // like href="x.md" inside <code> untouched
+        if in_tag && (c == '"' || c == '\'') {
+            let quote_char = c;
+            // Check if this quote opens an href attribute value
+            // (look at the 5 chars just before the quote we pushed)
+            let before_quote = &result[..result.len() - quote_char.len_utf8()];
+            let suffix: String = before_quote
+                .chars()
+                .rev()
+                .take(5)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if suffix.eq_ignore_ascii_case("href=") {
+                // Collect the URL up to the closing quote
+                let mut url = String::new();
+                let mut closed = false;
+                for (_, ch) in chars.by_ref() {
+                    if ch == quote_char {
+                        result.push_str(&fix_md_extension(&url));
+                        result.push(quote_char);
+                        closed = true;
+                        break;
+                    }
+                    url.push(ch);
+                }
+                if !closed {
+                    // Unterminated attribute: emit what we collected as-is
+                    result.push_str(&url);
+                }
+            }
+        }
     }
 
     // Normalize backslashes to forward slashes in href attributes
-    result = normalize_path_separators(&result);
+    normalize_path_separators(&result)
+}
 
-    result
+/// Convert a `.md` extension in a URL to `.html` (also handles `.md#anchor`)
+fn fix_md_extension(url: &str) -> String {
+    if let Some(stripped) = url.strip_suffix(".md") {
+        format!("{}.html", stripped)
+    } else if let Some(pos) = url.find(".md#") {
+        format!("{}.html{}", &url[..pos], &url[pos + 3..])
+    } else {
+        url.to_string()
+    }
 }
 
 /// Remove leading slashes from internal links
@@ -1608,6 +1782,110 @@ sequenceDiagram
         assert_eq!(slugify("日本語テスト"), "日本語テスト"); // Japanese preserved
         assert_eq!(slugify("test_underscore"), "test_underscore"); // Underscores preserved
         assert_eq!(slugify("a--b"), "a-b"); // Multiple hyphens collapsed
+    }
+
+    #[test]
+    fn test_duplicate_heading_ids_are_deduplicated() {
+        // Regression: identical headings produced identical ids
+        let md = "## 概要\n\n本文A\n\n## 概要\n\n本文B\n\n## 概要\n\n本文C\n";
+        let html = render_markdown(md);
+        assert!(html.contains(r#"<h2 id="概要">"#), "html: {}", html);
+        assert!(html.contains(r#"<h2 id="概要-1">"#), "html: {}", html);
+        assert!(html.contains(r#"<h2 id="概要-2">"#), "html: {}", html);
+    }
+
+    #[test]
+    fn test_toc_ids_match_rendered_heading_ids_for_duplicates() {
+        let md = "## 概要\n\n本文A\n\n### 詳細\n\n## 概要\n\n本文B\n";
+        let html = render_markdown(md);
+        let toc = extract_headings(md);
+        for item in &toc {
+            assert!(
+                html.contains(&format!(r#"id="{}""#, item.id)),
+                "TOC id {} not found in rendered html: {}",
+                item.id,
+                html
+            );
+        }
+        // The two 概要 entries must have distinct ids
+        let ids: Vec<&str> = toc.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids.iter().filter(|i| **i == "概要").count(), 1);
+        assert!(ids.contains(&"概要-1"));
+    }
+
+    #[test]
+    fn test_md_link_in_inline_code_not_rewritten() {
+        // Regression: blind .md# replacement rewrote text inside <code>
+        let md = "詳細は `chapter1.md#section` を参照。\n\n[link](other.md#anchor)\n";
+        let html = render_markdown(md);
+        assert!(
+            html.contains("<code>chapter1.md#section</code>"),
+            "inline code must be untouched: {}",
+            html
+        );
+        assert!(
+            html.contains(r##"href="other.html#anchor""##),
+            "real links must still be converted: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_md_link_in_code_block_not_rewritten() {
+        let md = "```\nsee chapter1.md#section and \"file.md\"\n```\n";
+        let html = render_markdown(md);
+        assert!(
+            html.contains("chapter1.md#section"),
+            "code block must be untouched: {}",
+            html
+        );
+        assert!(!html.contains("chapter1.html"), "html: {}", html);
+    }
+
+    #[test]
+    fn test_href_like_text_outside_tag_not_rewritten() {
+        // Raw HTML passes through markdown unescaped; href= appearing as
+        // visible text (not inside a tag) must not be treated as a link
+        let html = r#"<p>example: href="a.md" is the syntax. <a href="b.md">real</a></p>"#;
+        let fixed = fix_relative_links(html);
+        assert!(fixed.contains(r#"href="a.md" is the syntax"#), "{}", fixed);
+        assert!(fixed.contains(r#"<a href="b.html">"#), "{}", fixed);
+    }
+
+    #[test]
+    fn test_footnote_ref_in_inline_code_not_converted() {
+        // Regression: the regex character class [^abc] inside inline code
+        // was converted to a footnote reference
+        let md = "正規表現 `[^abc]` は abc 以外にマッチする。[^1]\n\n[^1]: 実際の脚注\n";
+        let html = render_markdown(md);
+        assert!(
+            html.contains("<code>[^abc]</code>"),
+            "inline code must be untouched: {}",
+            html
+        );
+        assert!(
+            !html.contains("reffn_abc"),
+            "no footnote must be generated from code: {}",
+            html
+        );
+        // The real footnote reference still works
+        assert!(html.contains("reffn_1"), "html: {}", html);
+    }
+
+    #[test]
+    fn test_footnote_ref_in_fenced_code_not_converted() {
+        let md = "```\nmatch = re.compile(r\"[^abc]\")\n```\n\n本文[^2]です。\n\n[^2]: 脚注\n";
+        let html = render_markdown(md);
+        assert!(
+            !html.contains("reffn_abc"),
+            "no footnote from fenced code: {}",
+            html
+        );
+        assert!(
+            html.contains("reffn_2"),
+            "real footnote still works: {}",
+            html
+        );
     }
 }
 

@@ -246,11 +246,18 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
 
         // Check if the term starts here
         if html[i..].starts_with(term) {
-            // Make sure it's a word boundary (not part of a larger word)
-            let before_ok = i == 0 || !is_word_char(result.chars().last().unwrap_or(' '));
+            // Make sure it's a word boundary (not part of a larger word).
+            // Boundary is blocked only when the adjacent character continues
+            // the same script run as the term edge (e.g. "API" in "APIARY",
+            // "用語" in "専門用語集"). Different scripts (kanji term followed
+            // by hiragana particle, etc.) are valid boundaries in Japanese.
+            let term_first = term.chars().next().unwrap_or(' ');
+            let term_last = term.chars().last().unwrap_or(' ');
+            let before_ok =
+                i == 0 || !is_same_word_run(result.chars().last().unwrap_or(' '), term_first);
             let after_idx = i + term.len();
             let after_ok = after_idx >= html.len()
-                || !is_word_char(html[after_idx..].chars().next().unwrap_or(' '));
+                || !is_same_word_run(term_last, html[after_idx..].chars().next().unwrap_or(' '));
 
             if before_ok && after_ok {
                 // Escape definition for HTML attribute
@@ -260,8 +267,9 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
                     escaped_def, term
                 ));
 
-                // Skip the term characters
-                for _ in 0..term.len() - 1 {
+                // Skip the term characters (chars, not bytes — the term may
+                // contain multi-byte characters)
+                for _ in 0..term.chars().count() - 1 {
                     chars.next();
                 }
                 continue;
@@ -274,9 +282,40 @@ fn replace_term_in_html(html: &str, term: &str, definition: &str) -> String {
     result
 }
 
-/// Check if a character is a word character (alphanumeric or Japanese)
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c > '\x7F' // Japanese characters
+/// Script class used for word-boundary detection
+#[derive(PartialEq)]
+enum CharClass {
+    /// Non-word character (punctuation, whitespace, symbols)
+    None,
+    /// Alphanumeric (ASCII and fullwidth letters/digits)
+    Alnum,
+    Hiragana,
+    Katakana,
+    Kanji,
+}
+
+fn char_class(c: char) -> CharClass {
+    match c {
+        '\u{3041}'..='\u{309F}' => CharClass::Hiragana,
+        '\u{30A0}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{FF66}'..='\u{FF9F}' => {
+            CharClass::Katakana
+        }
+        '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' => {
+            CharClass::Kanji
+        }
+        _ if c.is_alphanumeric() => CharClass::Alnum,
+        _ => CharClass::None,
+    }
+}
+
+/// Two adjacent characters belong to the same word run (so a term edge
+/// touching such a character is NOT a word boundary)
+fn is_same_word_run(a: char, b: char) -> bool {
+    let ca = char_class(a);
+    if ca == CharClass::None {
+        return false;
+    }
+    ca == char_class(b)
 }
 
 /// Escape a string for use in an HTML attribute
@@ -542,6 +581,49 @@ Representational State Transfer
             let result = apply_glossary(input, &glossary);
             let _ = result; // Should not panic
         }
+    }
+
+    #[test]
+    fn test_apply_glossary_japanese_term_no_text_loss() {
+        // Regression: term.len() (bytes) was used to skip chars, eating
+        // the text following a multi-byte term
+        let glossary = Glossary::parse("## 用語\n説明文です。").unwrap();
+        let html = "<p>用語 とは何か。</p>";
+        let result = apply_glossary(html, &glossary);
+        assert!(
+            result.contains("とは何か。"),
+            "text after the term must be preserved: {}",
+            result
+        );
+        assert!(result
+            .contains(r#"<span class="glossary-term" data-definition="説明文です。">用語</span>"#));
+    }
+
+    #[test]
+    fn test_apply_glossary_japanese_term_in_sentence() {
+        // Regression: is_word_char treated all non-ASCII as word chars,
+        // so a kanji term followed by hiragana never matched
+        let glossary = Glossary::parse("## 用語\n説明").unwrap();
+        let html = "<p>この用語について説明します。</p>";
+        let result = apply_glossary(html, &glossary);
+        assert!(
+            result.contains("glossary-term"),
+            "kanji term adjacent to hiragana should match: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_apply_glossary_japanese_compound_not_matched() {
+        // A term inside a larger kanji compound is not a word boundary
+        let glossary = Glossary::parse("## 用語\n説明").unwrap();
+        let html = "<p>専門用語集を参照。</p>";
+        let result = apply_glossary(html, &glossary);
+        assert!(
+            !result.contains("glossary-term"),
+            "term inside kanji compound should not match: {}",
+            result
+        );
     }
 
     #[test]

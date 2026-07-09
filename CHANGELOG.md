@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Glossary: multi-byte terms (Japanese) no longer eat the text that follows them (byte-length vs char-count skip bug)
+- Glossary: word-boundary detection now uses script classes (kanji/hiragana/katakana/alphanumeric), so Japanese terms inside Japanese sentences actually match; partial matches inside same-script compounds (e.g. 専門用語集) are still rejected
+- LANGS.md: malformed lines (missing bracket/paren) are skipped instead of panicking and aborting the whole build
+- Nunjucks: template blocks spanning fenced code blocks (`{% if %}` before / `{% endif %}` after) now work — the document is rendered in a single pass with code blocks protected by placeholders
+- Links: `.md` → `.html` conversion is now scoped to `href` attributes; literal text like `chapter1.md#section` inside inline code is no longer rewritten
+- Footnotes: `[^abc]` inside fenced code blocks and inline code spans is no longer converted to a footnote reference (regex character classes in code samples stay intact)
+- Headings: duplicate headings get deduplicated ids (`概要`, `概要-1`, `概要-2` — github-slugger behavior); TOC extraction mirrors the same logic (including custom `{#id}`) so sidebar anchors always match
+
 ### Security
 - Add path traversal protection in dev server (canonicalize check against temp_dir)
 - Add image download size limit (50 MB max)
