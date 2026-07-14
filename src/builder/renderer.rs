@@ -1374,11 +1374,25 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
     // Create the prefix to go back to root (e.g., "../../" for depth 2)
     let root_prefix: String = "../".repeat(depth);
 
-    // href: root-relative AND bare directory paths are book-root-relative
-    let result = adjust_attribute_urls(&result, r#"href=""#, &root_prefix, depth, true);
+    // Bare directory paths (e.g., "CommonUI/Dialog.md") are file-relative.
+    // Normalize them to a canonical root-based path (root_prefix + current_dir + url)
+    // so SPA navigation cannot accumulate relative segments, while preserving
+    // the file-relative meaning of the link as written.
+    let current_dir = Path::new(current_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let bare_dir_prefix = if current_dir.is_empty() {
+        String::new()
+    } else {
+        format!("{}{}/", root_prefix, current_dir)
+    };
+
+    // href: root-relative paths are book-root-relative; bare directory paths are file-relative
+    let result = adjust_attribute_urls(&result, r#"href=""#, &root_prefix, depth, Some(&bare_dir_prefix));
     // src: only root-relative paths (/assets/x.png). Page-relative image
     // paths (images/foo.png) are correct as written and must not be rewritten
-    adjust_attribute_urls(&result, r#"src=""#, &root_prefix, depth, false)
+    adjust_attribute_urls(&result, r#"src=""#, &root_prefix, depth, None)
 }
 
 /// Adjust URLs in one attribute type (href="..." / src="...") for page depth
@@ -1387,7 +1401,7 @@ fn adjust_attribute_urls(
     attr_pattern: &str,
     root_prefix: &str,
     depth: usize,
-    convert_bare_dir_paths: bool,
+    bare_dir_prefix: Option<&str>,
 ) -> String {
     let result = html;
     let mut new_result = String::new();
@@ -1424,7 +1438,7 @@ fn adjust_attribute_urls(
             // Check if this is an internal link that needs conversion (no leading /)
             // Skip: external links (http/https), anchor-only (#), already relative (../ or ./), data URIs
             // Skip: same-directory links (no "/" in path) - these are already correct relative links
-            let needs_conversion = convert_bare_dir_paths
+            let needs_conversion = bare_dir_prefix.is_some()
                 && !url.is_empty()
                 && url.contains('/')  // Only convert links with directory paths
                 && !url.starts_with("http://")
@@ -1441,8 +1455,9 @@ fn adjust_attribute_urls(
             if needs_conversion {
                 // Copy everything up to the URL
                 new_result.push_str(&result[last_end..url_start]);
-                // Add the root prefix + original URL
-                new_result.push_str(root_prefix);
+                // Normalize the file-relative bare path to a canonical
+                // root-based relative path (root_prefix + current_dir + url)
+                new_result.push_str(bare_dir_prefix.unwrap_or_default());
                 new_result.push_str(url);
                 last_end = url_end;
             }
