@@ -341,7 +341,9 @@ body.loading .markdown-section {
 .markdown-section h4,
 .markdown-section h5,
 .markdown-section h6 {
-    scroll-margin-top: 16px;
+    /* Headroom when a shared #id link scrolls a heading to the top, so the
+       "Link copied!" bubble above the icon is not clipped by the viewport */
+    scroll-margin-top: 24px;
 }
 
 .markdown-section .heading-anchor {
@@ -388,7 +390,9 @@ body.loading .markdown-section {
     content: attr(data-tip);
     position: absolute;
     left: 50%;
-    bottom: 145%;
+    /* Fixed 3px gap above the icon: a percentage would scale with the heading
+       font size and push the bubble off-screen on large headings */
+    bottom: calc(100% + 3px);
     transform: translateX(-50%);
     padding: 5px 8px;
     border-radius: 4px;

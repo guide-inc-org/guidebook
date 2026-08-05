@@ -733,6 +733,21 @@ fn test_heading_anchors_shipped_and_headings_have_ids() {
         js.contains("copyTextToClipboard"),
         "clicking an anchor must copy the shareable URL"
     );
+    // A title attribute would raise the browser's native tooltip ~1s after hover,
+    // overlapping the "Link copied!" bubble; aria-label alone keeps it accessible
+    assert!(
+        !js.contains(r#"'title', 'Copy link to this section'"#),
+        "the anchor must not set a title attribute (it overlaps the copied bubble)"
+    );
+    assert!(
+        js.contains("'aria-label', 'Copy link to this section'"),
+        "the anchor must keep an aria-label for screen readers"
+    );
+    // Back/forward across a hash-only entry must scroll, not refetch the page
+    assert!(
+        js.contains("location.pathname === currentPathname"),
+        "popstate must compare the path before refetching the page"
+    );
 
     let css = fs::read_to_string(output.join("gitbook/gitbook.css")).unwrap();
     assert!(

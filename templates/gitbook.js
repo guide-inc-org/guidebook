@@ -244,8 +244,9 @@
             var anchor = document.createElement('a');
             anchor.className = 'heading-anchor';
             anchor.href = '#' + encodeURIComponent(heading.id);
+            // aria-label only: a title attribute would make the browser's native
+            // tooltip appear ~1s after hover and overlap the "Link copied!" bubble
             anchor.setAttribute('aria-label', 'Copy link to this section');
-            anchor.setAttribute('title', 'Copy link to this section');
             anchor.innerHTML = HEADING_ANCHOR_ICON;
             heading.appendChild(anchor);
         });
@@ -513,6 +514,7 @@
 
                 // Update URL (use absolute URL to avoid relative path issues with SPA navigation)
                 history.pushState(null, '', absoluteUrl);
+                currentPathname = new URL(absoluteUrl).pathname;
 
                 // Scroll to hash anchor or top
                 if (hash) {
@@ -631,8 +633,36 @@
             });
     }
 
+    // Scroll to the element a location.hash points at ('' scrolls to top)
+    function scrollToHash(hash, behavior) {
+        if (!hash) {
+            window.scrollTo(0, 0);
+            return;
+        }
+
+        var id = hash.charAt(0) === '#' ? hash.substring(1) : hash;
+        // Decode URL-encoded anchors (e.g. %E5%A4%89%E6%95%B0 -> 変数)
+        try {
+            id = decodeURIComponent(id);
+        } catch (ex) {
+            // If decoding fails, use as-is
+        }
+
+        var target = document.getElementById(id);
+        if (target) target.scrollIntoView({ behavior: behavior || 'auto' });
+    }
+
+    // Path currently rendered in the content area, so back/forward can tell a
+    // hash-only history entry (anchor click) from a real page navigation
+    var currentPathname = location.pathname;
+
     // Handle browser back/forward
     window.addEventListener('popstate', function() {
+        // Same page, only the #anchor changed: scroll instead of refetching
+        if (location.pathname === currentPathname) {
+            scrollToHash(location.hash, 'smooth');
+            return;
+        }
         loadPage(location.pathname + location.hash, null);
     });
 
@@ -645,21 +675,10 @@
     function scrollToHashOnLoad() {
         if (!window.location.hash) return;
 
-        var hash = window.location.hash.substring(1);
-        // Decode URL-encoded anchor
-        try {
-            hash = decodeURIComponent(hash);
-        } catch (ex) {
-            // If decoding fails, use as-is
-        }
-
-        var target = document.getElementById(hash);
-        if (target) {
-            // Use setTimeout to ensure layout is complete after all resources load
-            setTimeout(function() {
-                target.scrollIntoView({ behavior: 'auto' });
-            }, 100);
-        }
+        // Use setTimeout to ensure layout is complete after all resources load
+        setTimeout(function() {
+            scrollToHash(window.location.hash);
+        }, 100);
     }
 
     // Use 'load' event to ensure all resources (images, CSS) are loaded
