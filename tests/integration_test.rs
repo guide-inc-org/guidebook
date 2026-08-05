@@ -690,6 +690,62 @@ fn test_favicon_files_emitted() {
 }
 
 #[test]
+fn test_heading_anchors_shipped_and_headings_have_ids() {
+    // Heading anchor links (hover a heading -> link icon -> click copies a #id URL)
+    // only work if three things hold together: headings carry ids, the JS that
+    // injects the icons ships and is wired up (also after SPA navigation), and the
+    // CSS that reveals them on hover ships too. Dropping any one of them silently
+    // breaks sharing links to a section.
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    // Headings the anchors attach to must carry ids
+    let ch1 = fs::read_to_string(output.join("chapter1.html")).unwrap();
+    assert!(
+        ch1.contains(r#"<h2 id="section-11">"#),
+        "headings must carry ids for anchor links to target, got: {}",
+        ch1
+    );
+
+    let js = fs::read_to_string(output.join("gitbook/gitbook.js")).unwrap();
+    assert!(
+        js.contains("function setupHeadingAnchors()"),
+        "gitbook.js must ship the heading anchor injector"
+    );
+    // Called once on load and again after SPA navigation replaces the content
+    assert!(
+        js.matches("setupHeadingAnchors();").count() >= 2,
+        "setupHeadingAnchors must run on load and after SPA navigation"
+    );
+    assert!(
+        js.contains("copyTextToClipboard"),
+        "clicking an anchor must copy the shareable URL"
+    );
+
+    let css = fs::read_to_string(output.join("gitbook/gitbook.css")).unwrap();
+    assert!(
+        css.contains(".heading-anchor"),
+        "gitbook.css must ship the heading anchor styles"
+    );
+    assert!(
+        css.contains("h2:hover .heading-anchor"),
+        "the icon must be revealed on heading hover"
+    );
+}
+
+#[test]
 fn test_search_index_handles_anchors_and_front_matter() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("book");

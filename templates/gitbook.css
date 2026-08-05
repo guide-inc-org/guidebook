@@ -334,6 +334,87 @@ body.loading .markdown-section {
     margin: 1.5em 0 0.5em;
 }
 
+/* Heading anchors: link icon revealed on hover, click copies a shareable #id URL */
+.markdown-section h1,
+.markdown-section h2,
+.markdown-section h3,
+.markdown-section h4,
+.markdown-section h5,
+.markdown-section h6 {
+    scroll-margin-top: 16px;
+}
+
+.markdown-section .heading-anchor {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.3em;
+    color: #b1b7bd;
+    opacity: 0;
+    text-decoration: none;
+    /* Center the icon on the cap-height band of the heading text:
+       at baseline alignment the icon's center sits 0.425em (half of 0.85em) above
+       the baseline, while the visual center of capitals is ~0.35em above it. */
+    vertical-align: -0.075em;
+    transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.markdown-section .heading-anchor svg {
+    display: block;
+    width: 0.85em;
+    height: 0.85em;
+    fill: currentColor;
+}
+
+.markdown-section h1:hover .heading-anchor,
+.markdown-section h2:hover .heading-anchor,
+.markdown-section h3:hover .heading-anchor,
+.markdown-section h4:hover .heading-anchor,
+.markdown-section h5:hover .heading-anchor,
+.markdown-section h6:hover .heading-anchor,
+.markdown-section .heading-anchor:focus,
+.markdown-section .heading-anchor.copied {
+    opacity: 1;
+}
+
+.markdown-section .heading-anchor:hover,
+.markdown-section .heading-anchor:focus {
+    color: #4183c4;
+    text-decoration: none;
+}
+
+/* "Link copied!" bubble shown briefly after clicking the icon */
+.markdown-section .heading-anchor.copied::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: 50%;
+    bottom: 145%;
+    transform: translateX(-50%);
+    padding: 5px 8px;
+    border-radius: 4px;
+    background: #2c3e50;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* Touch devices have no hover: keep the icon faintly visible */
+@media (hover: none) {
+    .markdown-section .heading-anchor {
+        opacity: 0.4;
+    }
+}
+
+@media print {
+    .markdown-section .heading-anchor {
+        display: none;
+    }
+}
+
 .markdown-section p {
     margin: 0 0 1em;
 }
@@ -1095,6 +1176,20 @@ body.loading .markdown-section {
 .book.theme-night .markdown-section h1,
 .book.theme-night .markdown-section h2 {
     border-bottom-color: #3a3a3a;
+}
+
+.book.theme-night .markdown-section .heading-anchor {
+    color: #7d858d;
+}
+
+.book.theme-night .markdown-section .heading-anchor:hover,
+.book.theme-night .markdown-section .heading-anchor:focus {
+    color: #7ab3e8;
+}
+
+.book.theme-night .markdown-section .heading-anchor.copied::after {
+    background: #1a1a1a;
+    color: #e8e8e8;
 }
 
 .book.theme-night .markdown-section code {
