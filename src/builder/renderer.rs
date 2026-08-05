@@ -1389,7 +1389,13 @@ fn convert_relative_links_to_absolute(html: &str, current_path: &str) -> String 
     };
 
     // href: root-relative paths are book-root-relative; bare directory paths are file-relative
-    let result = adjust_attribute_urls(&result, r#"href=""#, &root_prefix, depth, Some(&bare_dir_prefix));
+    let result = adjust_attribute_urls(
+        &result,
+        r#"href=""#,
+        &root_prefix,
+        depth,
+        Some(&bare_dir_prefix),
+    );
     // src: only root-relative paths (/assets/x.png). Page-relative image
     // paths (images/foo.png) are correct as written and must not be rewritten
     adjust_attribute_urls(&result, r#"src=""#, &root_prefix, depth, None)

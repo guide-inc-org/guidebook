@@ -229,6 +229,91 @@
         });
     });
 
+    // Heading anchors: hovering a heading reveals a link icon.
+    // Clicking it puts #id in the URL and copies the full link for sharing,
+    // so opening that link scrolls straight to the heading.
+    var HEADING_ANCHOR_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7.775 3.275a.75.75 0 0 0 1.06 1.06l1.25-1.25a2 2 0 1 1 2.83 2.83l-2.5 2.5a2 2 0 0 1-2.83 0 .75.75 0 0 0-1.06 1.06 3.5 3.5 0 0 0 4.95 0l2.5-2.5a3.5 3.5 0 0 0-4.95-4.95l-1.25 1.25Zm-4.69 9.64a2 2 0 0 1 0-2.83l2.5-2.5a2 2 0 0 1 2.83 0 .75.75 0 0 0 1.06-1.06 3.5 3.5 0 0 0-4.95 0l-2.5 2.5a3.5 3.5 0 0 0 4.95 4.95l1.25-1.25a.75.75 0 0 0-1.06-1.06l-1.25 1.25a2 2 0 0 1-2.83 0Z"></path></svg>';
+
+    function setupHeadingAnchors() {
+        var section = document.querySelector('.markdown-section');
+        if (!section) return;
+
+        section.querySelectorAll('h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]').forEach(function(heading) {
+            if (heading.querySelector('.heading-anchor')) return;
+
+            var anchor = document.createElement('a');
+            anchor.className = 'heading-anchor';
+            anchor.href = '#' + encodeURIComponent(heading.id);
+            anchor.setAttribute('aria-label', 'Copy link to this section');
+            anchor.setAttribute('title', 'Copy link to this section');
+            anchor.innerHTML = HEADING_ANCHOR_ICON;
+            heading.appendChild(anchor);
+        });
+    }
+
+    // Copy text to clipboard, falling back to execCommand on insecure origins
+    // (navigator.clipboard is unavailable over plain http except on localhost)
+    function copyTextToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+
+        return new Promise(function(resolve, reject) {
+            var textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-1000px';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            var ok = false;
+            try {
+                ok = document.execCommand('copy');
+            } catch (ex) {
+                ok = false;
+            }
+            document.body.removeChild(textarea);
+            ok ? resolve() : reject(new Error('copy failed'));
+        });
+    }
+
+    function flashAnchorTip(anchor, message) {
+        anchor.setAttribute('data-tip', message);
+        anchor.classList.add('copied');
+        if (anchor._tipTimer) clearTimeout(anchor._tipTimer);
+        anchor._tipTimer = setTimeout(function() {
+            anchor.classList.remove('copied');
+            anchor.removeAttribute('data-tip');
+        }, 1500);
+    }
+
+    // Delegated on document so it keeps working after SPA navigation replaces content
+    document.addEventListener('click', function(e) {
+        var anchor = e.target.closest ? e.target.closest('.heading-anchor') : null;
+        if (!anchor) return;
+
+        // Let modifier clicks fall through to browser default (open in new tab, etc.)
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+
+        var heading = anchor.closest('h1, h2, h3, h4, h5, h6');
+        if (!heading || !heading.id) return;
+
+        e.preventDefault();
+
+        var hash = '#' + encodeURIComponent(heading.id);
+        history.pushState(null, '', location.pathname + location.search + hash);
+        heading.scrollIntoView({ behavior: 'smooth' });
+
+        copyTextToClipboard(location.href)
+            .then(function() {
+                flashAnchorTip(anchor, 'Link copied!');
+            })
+            .catch(function() {
+                flashAnchorTip(anchor, 'Press Ctrl/Cmd+C to copy');
+            });
+    });
+
     // SPA-like navigation for sidebar links
     // Get base URL for resolving relative links (e.g., /jp/)
     function getBaseUrl() {
@@ -523,6 +608,9 @@
                 // Normalize links in updated content (set target="_blank" for external pages)
                 normalizeContentLinks();
 
+                // Re-add heading anchor icons to the new content
+                setupHeadingAnchors();
+
                 // Scroll sidebar to show active item only for page navigation (prev/next buttons)
                 // Not for sidebar clicks - user already knows where they clicked
                 if (!clickedLink) {
@@ -551,6 +639,7 @@
     setupSpaNavigation();
     setupPageNavigation();
     normalizeContentLinks();
+    setupHeadingAnchors();
 
     // Handle initial page load with hash anchor
     function scrollToHashOnLoad() {
