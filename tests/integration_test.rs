@@ -791,6 +791,34 @@ fn test_heading_anchors_shipped_and_headings_have_ids() {
         !js.contains(r##"document.querySelectorAll('a[href*="#"]').forEach"##),
         "in-page anchor clicks must be handled by delegation, not per-element listeners"
     );
+    // The book can share its history entry with a host page (Guidebook Cloud),
+    // so the remembered offset is merged in, never written over what is there
+    assert!(
+        js.contains("function stateWithScroll(")
+            && js.contains("history.replaceState(stateWithScroll(state), '')")
+            && !js.contains("history.replaceState({ scrollY:"),
+        "the remembered scroll offset must be merged into history.state, not replace it"
+    );
+    // At narrow widths guidebook's own .sidebar-toggle (fixed, top 10px) sits
+    // over the content column and chains onto the site bar, overstating it
+    assert!(
+        js.contains("var OWN_FIXED_UI =")
+            && js.contains("function isCoveredBySiteLayer(")
+            && js.contains("layer.closest(OWN_FIXED_UI)"),
+        "the probed header height must ignore fixed chrome guidebook renders itself"
+    );
+    // Chrome of ours painted over the bar must not cut the measurement short,
+    // so the whole stack at the probe point is inspected
+    assert!(
+        js.contains("document.elementsFromPoint("),
+        "the header probe must look through the stack, not only the topmost element"
+    );
+    // highlight.js/mermaid grow the page after the restore, so a single early
+    // scroll gets clamped short — loadPage() re-asserts and so must reload
+    assert!(
+        js.matches("restoreScroll(state);").count() >= 2,
+        "the reload restore must be re-asserted once the page is fully laid out"
+    );
 
     let css = fs::read_to_string(output.join("gitbook/gitbook.css")).unwrap();
     assert!(

@@ -304,13 +304,37 @@
     // scroll-margin-top used when the browser does the scrolling
     var HEADING_SCROLL_GAP = 24;
 
+    // Fixed/sticky chrome guidebook renders itself. The bar we probe for lives
+    // outside the generated markup, so ours must never be mistaken for it: at
+    // narrow widths .sidebar-toggle (fixed, top 10px) sits over the content
+    // column and chains onto the real bar, overstating its height by its own.
+    var OWN_FIXED_UI = '.book-summary, .page-toc, .page-nav, .sidebar-toggle, ' +
+        '.toc-toggle, .fontsettings-toolbar, .back-to-top';
+
+    // The nearest fixed/sticky ancestor of el, or null
+    function fixedLayerOf(el) {
+        for (; el && el !== document.body; el = el.parentElement) {
+            var position = getComputedStyle(el).position;
+            if (position === 'fixed' || position === 'sticky') return el;
+        }
+        return null;
+    }
+
     // True when the point sits inside a fixed/sticky layer (a site header bar,
     // a floating toolbar, ...) that would paint over the bubble
     function isCoveredByFixedLayer(x, y) {
-        var el = document.elementFromPoint(x, y);
-        for (; el && el !== document.body; el = el.parentElement) {
-            var position = getComputedStyle(el).position;
-            if (position === 'fixed' || position === 'sticky') return true;
+        return !!fixedLayerOf(document.elementFromPoint(x, y));
+    }
+
+    // True when a fixed/sticky layer from outside the generated markup paints at
+    // this point. The whole stack is inspected, not just the topmost element:
+    // chrome of ours drawn over the bar must not hide it and cut the measurement
+    // short either.
+    function isCoveredBySiteLayer(x, y) {
+        var stack = document.elementsFromPoint(x, y);
+        for (var i = 0; i < stack.length; i++) {
+            var layer = fixedLayerOf(stack[i]);
+            if (layer && !layer.closest(OWN_FIXED_UI)) return true;
         }
         return false;
     }
@@ -319,7 +343,7 @@
     // around the book, ...) measured at x, so headings don't scroll underneath it.
     // Probed instead of configured: the bar lives outside the generated markup.
     function fixedTopInset(x) {
-        if (!isCoveredByFixedLayer(x, 0)) return 0;
+        if (!isCoveredBySiteLayer(x, 0)) return 0;
 
         // Coarse scan for the first uncovered point, then narrow to 1px: a step
         // wider than that lands a few pixels off depending on where the probe
@@ -327,7 +351,7 @@
         var covered = 0;
         var uncovered = -1;
         for (var y = 8; y <= 240; y += 8) {
-            if (!isCoveredByFixedLayer(x, y)) {
+            if (!isCoveredBySiteLayer(x, y)) {
                 uncovered = y;
                 break;
             }
@@ -337,7 +361,7 @@
 
         while (uncovered - covered > 1) {
             var mid = (covered + uncovered) >> 1;
-            if (isCoveredByFixedLayer(x, mid)) {
+            if (isCoveredBySiteLayer(x, mid)) {
                 covered = mid;
             } else {
                 uncovered = mid;
@@ -754,6 +778,19 @@
 
     var rememberScrollTimer = null;
 
+    // Our offset merged into whatever the current entry already holds. The book
+    // can share its document (and so its history entry) with a host application
+    // — Guidebook Cloud wraps it in a page of its own — and replacing the state
+    // outright would drop what that host put there.
+    function stateWithScroll(state) {
+        var next = {};
+        if (state && typeof state === 'object') {
+            Object.keys(state).forEach(function(key) { next[key] = state[key]; });
+        }
+        next.scrollY = window.scrollY;
+        return next;
+    }
+
     // Store the reader's position in the current history entry.
     // Writes are coalesced and skipped for tiny moves: browsers rate-limit
     // history writes (Safari throws after ~100 in 30s)
@@ -761,7 +798,7 @@
         var state = history.state;
         if (state && Math.abs(state.scrollY - window.scrollY) < 16) return;
         try {
-            history.replaceState({ scrollY: window.scrollY }, '');
+            history.replaceState(stateWithScroll(state), '');
         } catch (ex) {
             // Rate-limited: the next scroll tick will try again
         }
@@ -833,8 +870,14 @@
                 scrollToHash(window.location.hash);
             } else if (history.state && typeof history.state.scrollY === 'number') {
                 // Reload without an anchor: scrollRestoration is 'manual', so the
-                // position remembered for this entry is restored here instead
-                restoreScroll(history.state);
+                // position remembered for this entry is restored here instead.
+                // Re-asserted like loadPage() does, since highlight.js/mermaid
+                // grow the page afterwards and an early scroll would be clamped
+                var state = history.state;
+                restoreScroll(state);
+                setTimeout(function() {
+                    restoreScroll(state);
+                }, 250);
             }
         }, 100);
     }
