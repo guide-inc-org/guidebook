@@ -110,7 +110,8 @@
 
             var target = document.getElementById(id);
             if (target) {
-                target.scrollIntoView({ behavior: 'smooth' });
+                rememberScroll();
+                scrollHeadingIntoView(target, 'smooth');
                 history.pushState(null, '', href);
             }
         });
@@ -204,29 +205,49 @@
         });
     }
 
-    // Smooth scroll for anchor links
-    document.querySelectorAll('a[href*="#"]').forEach(function(anchor) {
-        anchor.addEventListener('click', function(e) {
-            var href = this.getAttribute('href');
-            var hashIndex = href.indexOf('#');
-            if (hashIndex === -1) return;
+    // Smooth scroll for in-page anchor links.
+    // Delegated on document so links in content replaced by SPA navigation are
+    // covered too; bound per element they were left to the browser's own
+    // fragment scroll, which lands the heading under a fixed header bar.
+    document.addEventListener('click', function(e) {
+        var anchor = e.target.closest ? e.target.closest('a[href*="#"]') : null;
+        if (!anchor) return;
 
-            var hash = href.substring(hashIndex + 1);
-            // Decode URL-encoded anchor (e.g., %E3%83%87%E3%82%B6%E3%82%A4%E3%83%B3 -> デザイン)
-            try {
-                hash = decodeURIComponent(hash);
-            } catch (ex) {
-                // If decoding fails, use as-is
-            }
+        // Handled by their own listeners: page TOC (setupTocLinks) and the
+        // heading anchor icons. Running two handlers pushes two history
+        // entries per click, so Back lands on a duplicate entry.
+        if (anchor.closest('.page-toc') || anchor.classList.contains('heading-anchor')) return;
 
-            var target = document.getElementById(hash);
-            if (target) {
-                e.preventDefault();
-                target.scrollIntoView({ behavior: 'smooth' });
-                // Update URL hash without triggering navigation
-                history.pushState(null, '', '#' + encodeURIComponent(hash));
-            }
-        });
+        // Let modifier clicks use the browser default (open in new tab, ...)
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+
+        var url;
+        try {
+            url = new URL(anchor.getAttribute('href'), location.href);
+        } catch (ex) {
+            return;
+        }
+
+        // Only same-page anchors: a link to another page must navigate normally
+        if (url.pathname !== location.pathname || url.search !== location.search) return;
+        if (!url.hash) return;
+
+        var hash = url.hash.substring(1);
+        // Decode URL-encoded anchor (e.g., %E3%83%87%E3%82%B6%E3%82%A4%E3%83%B3 -> デザイン)
+        try {
+            hash = decodeURIComponent(hash);
+        } catch (ex) {
+            // If decoding fails, use as-is
+        }
+
+        var target = document.getElementById(hash);
+        if (target) {
+            e.preventDefault();
+            rememberScroll();
+            scrollHeadingIntoView(target, 'smooth');
+            // Update URL hash without triggering navigation
+            history.pushState(null, '', '#' + encodeURIComponent(hash));
+        }
     });
 
     // Heading anchors: hovering a heading reveals a link icon.
@@ -279,12 +300,92 @@
         });
     }
 
+    // Gap kept above a heading scrolled into view, matching the CSS
+    // scroll-margin-top used when the browser does the scrolling
+    var HEADING_SCROLL_GAP = 24;
+
+    // True when the point sits inside a fixed/sticky layer (a site header bar,
+    // a floating toolbar, ...) that would paint over the bubble
+    function isCoveredByFixedLayer(x, y) {
+        var el = document.elementFromPoint(x, y);
+        for (; el && el !== document.body; el = el.parentElement) {
+            var position = getComputedStyle(el).position;
+            if (position === 'fixed' || position === 'sticky') return true;
+        }
+        return false;
+    }
+
+    // Height of a bar pinned to the top of the viewport (a site header wrapped
+    // around the book, ...) measured at x, so headings don't scroll underneath it.
+    // Probed instead of configured: the bar lives outside the generated markup.
+    function fixedTopInset(x) {
+        if (!isCoveredByFixedLayer(x, 0)) return 0;
+
+        // Coarse scan for the first uncovered point, then narrow to 1px: a step
+        // wider than that lands a few pixels off depending on where the probe
+        // falls relative to the bar's border
+        var covered = 0;
+        var uncovered = -1;
+        for (var y = 8; y <= 240; y += 8) {
+            if (!isCoveredByFixedLayer(x, y)) {
+                uncovered = y;
+                break;
+            }
+            covered = y;
+        }
+        if (uncovered === -1) return covered;
+
+        while (uncovered - covered > 1) {
+            var mid = (covered + uncovered) >> 1;
+            if (isCoveredByFixedLayer(x, mid)) {
+                covered = mid;
+            } else {
+                uncovered = mid;
+            }
+        }
+        return uncovered;
+    }
+
+    // Scroll a heading just below any fixed top bar, with room for the bubble
+    function scrollHeadingIntoView(heading, behavior) {
+        var rect = heading.getBoundingClientRect();
+        var probeX = rect.left + Math.min(rect.width, 40) / 2;
+        var top = window.scrollY + rect.top - fixedTopInset(probeX) - HEADING_SCROLL_GAP;
+        window.scrollTo({ top: Math.max(0, top), behavior: behavior || 'auto' });
+    }
+
+    // The bubble sits above the icon, but flips below when that space is clipped
+    // by the viewport or covered by a fixed header
+    function positionAnchorTip(anchor) {
+        anchor.classList.remove('tip-below');
+
+        var rect = anchor.getBoundingClientRect();
+        var tipHeight = 25; // 12px line + 5px padding top/bottom + 3px gap
+        var probeY = rect.top - tipHeight / 2;
+
+        if (probeY < 0 || isCoveredByFixedLayer(rect.left + rect.width / 2, probeY)) {
+            anchor.classList.add('tip-below');
+        }
+    }
+
     function flashAnchorTip(anchor, message) {
         anchor.setAttribute('data-tip', message);
+        positionAnchorTip(anchor);
         anchor.classList.add('copied');
+
+        // The same click smooth-scrolls the heading, so what sits above the icon
+        // keeps changing: re-check every frame while the bubble is visible
+        var track = function() {
+            if (!anchor.classList.contains('copied')) return;
+            positionAnchorTip(anchor);
+            requestAnimationFrame(track);
+        };
+        requestAnimationFrame(track);
+
         if (anchor._tipTimer) clearTimeout(anchor._tipTimer);
         anchor._tipTimer = setTimeout(function() {
             anchor.classList.remove('copied');
+            anchor.classList.remove('tip-below');
             anchor.removeAttribute('data-tip');
         }, 1500);
     }
@@ -303,8 +404,9 @@
         e.preventDefault();
 
         var hash = '#' + encodeURIComponent(heading.id);
+        rememberScroll();
         history.pushState(null, '', location.pathname + location.search + hash);
-        heading.scrollIntoView({ behavior: 'smooth' });
+        scrollHeadingIntoView(heading, 'smooth');
 
         copyTextToClipboard(location.href)
             .then(function() {
@@ -441,7 +543,7 @@
         });
     }
 
-    function loadPage(url, clickedLink) {
+    function loadPage(url, clickedLink, restoreState) {
         if (isNavigating) return;
         isNavigating = true;
 
@@ -514,7 +616,7 @@
 
                 // Update URL (use absolute URL to avoid relative path issues with SPA navigation)
                 history.pushState(null, '', absoluteUrl);
-                currentPathname = new URL(absoluteUrl).pathname;
+                currentPage = pageKey(absoluteUrl);
 
                 // Scroll to hash anchor or top
                 if (hash) {
@@ -523,7 +625,7 @@
                         var target = document.getElementById(decodedHash);
                         if (target) {
                             setTimeout(function() {
-                                target.scrollIntoView({ behavior: 'auto' });
+                                scrollHeadingIntoView(target);
                             }, 50);
                         } else {
                             window.scrollTo(0, 0);
@@ -531,6 +633,15 @@
                     } catch (ex) {
                         window.scrollTo(0, 0);
                     }
+                } else if (restoreState) {
+                    // Back/forward to a page without an anchor: put the reader
+                    // back where they were, not at the top. Re-asserted once the
+                    // page is fully laid out, since highlight.js/mermaid grow it
+                    // afterwards and an early scroll would be clamped short
+                    restoreScroll(restoreState);
+                    setTimeout(function() {
+                        restoreScroll(restoreState);
+                    }, 250);
                 } else {
                     window.scrollTo(0, 0);
                 }
@@ -633,12 +744,44 @@
             });
     }
 
-    // Scroll to the element a location.hash points at ('' scrolls to top)
-    function scrollToHash(hash, behavior) {
-        if (!hash) {
-            window.scrollTo(0, 0);
-            return;
+    // Headings are scrolled clear of any fixed header, so the browser's own
+    // restoration must not race us on back/forward: it alternates between
+    // restoring the saved offset and doing a plain fragment scroll (which knows
+    // nothing about the header). We remember the offset per history entry instead.
+    if ('scrollRestoration' in history) {
+        history.scrollRestoration = 'manual';
+    }
+
+    var rememberScrollTimer = null;
+
+    // Store the reader's position in the current history entry.
+    // Writes are coalesced and skipped for tiny moves: browsers rate-limit
+    // history writes (Safari throws after ~100 in 30s)
+    function rememberScroll() {
+        var state = history.state;
+        if (state && Math.abs(state.scrollY - window.scrollY) < 16) return;
+        try {
+            history.replaceState({ scrollY: window.scrollY }, '');
+        } catch (ex) {
+            // Rate-limited: the next scroll tick will try again
         }
+    }
+
+    function restoreScroll(state) {
+        window.scrollTo(0, state && typeof state.scrollY === 'number' ? state.scrollY : 0);
+    }
+
+    window.addEventListener('scroll', function() {
+        if (rememberScrollTimer) return;
+        rememberScrollTimer = setTimeout(function() {
+            rememberScrollTimer = null;
+            rememberScroll();
+        }, 500);
+    });
+
+    // Scroll to the element a location.hash points at (no-op without a hash)
+    function scrollToHash(hash, behavior) {
+        if (!hash) return;
 
         var id = hash.charAt(0) === '#' ? hash.substring(1) : hash;
         // Decode URL-encoded anchors (e.g. %E5%A4%89%E6%95%B0 -> 変数)
@@ -649,21 +792,32 @@
         }
 
         var target = document.getElementById(id);
-        if (target) target.scrollIntoView({ behavior: behavior || 'auto' });
+        if (target) scrollHeadingIntoView(target, behavior);
     }
 
-    // Path currently rendered in the content area, so back/forward can tell a
-    // hash-only history entry (anchor click) from a real page navigation
-    var currentPathname = location.pathname;
+    // Page currently rendered in the content area, so back/forward can tell a
+    // hash-only history entry (anchor click) from a real page navigation.
+    // Includes the query string: two URLs differing only there are distinct pages.
+    function pageKey(url) {
+        var loc = url ? new URL(url) : location;
+        return loc.pathname + loc.search;
+    }
+
+    var currentPage = pageKey();
 
     // Handle browser back/forward
-    window.addEventListener('popstate', function() {
+    window.addEventListener('popstate', function(e) {
         // Same page, only the #anchor changed: scroll instead of refetching
-        if (location.pathname === currentPathname) {
-            scrollToHash(location.hash, 'smooth');
+        if (pageKey() === currentPage) {
+            if (location.hash) {
+                scrollToHash(location.hash);
+            } else {
+                // Back to an entry without an anchor: return to where the reader was
+                restoreScroll(e.state);
+            }
             return;
         }
-        loadPage(location.pathname + location.hash, null);
+        loadPage(location.pathname + location.search + location.hash, null, e.state);
     });
 
     setupSpaNavigation();
@@ -673,11 +827,15 @@
 
     // Handle initial page load with hash anchor
     function scrollToHashOnLoad() {
-        if (!window.location.hash) return;
-
         // Use setTimeout to ensure layout is complete after all resources load
         setTimeout(function() {
-            scrollToHash(window.location.hash);
+            if (window.location.hash) {
+                scrollToHash(window.location.hash);
+            } else if (history.state && typeof history.state.scrollY === 'number') {
+                // Reload without an anchor: scrollRestoration is 'manual', so the
+                // position remembered for this entry is restored here instead
+                restoreScroll(history.state);
+            }
         }, 100);
     }
 

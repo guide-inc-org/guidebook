@@ -743,10 +743,53 @@ fn test_heading_anchors_shipped_and_headings_have_ids() {
         js.contains("'aria-label', 'Copy link to this section'"),
         "the anchor must keep an aria-label for screen readers"
     );
-    // Back/forward across a hash-only entry must scroll, not refetch the page
+    // Back/forward across a hash-only entry must scroll, not refetch the page.
+    // The key includes the query string so ?a=1 and ?a=2 stay distinct pages.
     assert!(
-        js.contains("location.pathname === currentPathname"),
-        "popstate must compare the path before refetching the page"
+        js.contains("pageKey() === currentPage"),
+        "popstate must compare the page key before refetching the page"
+    );
+    assert!(
+        js.contains("loc.pathname + loc.search"),
+        "the page key must include the query string, not just the path"
+    );
+    // A fixed site header (gb-header etc.) lives outside the generated markup,
+    // so its height is probed and subtracted instead of hard-coded
+    assert!(
+        js.contains("function fixedTopInset(") && js.contains("function scrollHeadingIntoView("),
+        "anchor scrolling must offset any fixed top bar"
+    );
+    assert!(
+        js.contains("'tip-below'"),
+        "the bubble must be able to flip below the icon when the space above is covered"
+    );
+    // Every in-page scroll (anchor icon, TOC, in-page link, SPA hash) must go
+    // through the header-aware helper, or the target lands under the header bar
+    assert!(
+        !js.contains("target.scrollIntoView("),
+        "in-page scrolling must use scrollHeadingIntoView, not raw scrollIntoView"
+    );
+    // The browser's own restoration alternates between the saved offset and a
+    // plain fragment scroll (header-blind), so back/forward is ours to drive
+    assert!(
+        js.contains("history.scrollRestoration = 'manual'")
+            && js.contains("function rememberScroll()")
+            && js.contains("function restoreScroll("),
+        "back/forward must restore scroll positions itself, not race the browser"
+    );
+    // A TOC click used to run both the per-link and the delegated handler,
+    // pushing two entries so the first Back landed on a duplicate
+    assert!(
+        js.contains("anchor.closest('.page-toc')")
+            && js.contains("classList.contains('heading-anchor')"),
+        "the in-page anchor handler must skip TOC links and heading anchors, \
+         which have their own handlers, to avoid double history entries"
+    );
+    // Bound per element, links in content replaced by SPA navigation were left
+    // to the browser's header-blind fragment scroll
+    assert!(
+        !js.contains(r##"document.querySelectorAll('a[href*="#"]').forEach"##),
+        "in-page anchor clicks must be handled by delegation, not per-element listeners"
     );
 
     let css = fs::read_to_string(output.join("gitbook/gitbook.css")).unwrap();
@@ -757,6 +800,10 @@ fn test_heading_anchors_shipped_and_headings_have_ids() {
     assert!(
         css.contains("h2:hover .heading-anchor"),
         "the icon must be revealed on heading hover"
+    );
+    assert!(
+        css.contains(".heading-anchor.copied.tip-below::after"),
+        "gitbook.css must ship the flipped-below bubble position"
     );
 }
 

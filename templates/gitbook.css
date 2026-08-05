@@ -406,6 +406,13 @@ body.loading .markdown-section {
     z-index: 10;
 }
 
+/* Space above the icon is clipped or hidden behind a fixed header bar:
+   the bubble flips below the icon (toggled by positionAnchorTip()) */
+.markdown-section .heading-anchor.copied.tip-below::after {
+    bottom: auto;
+    top: calc(100% + 3px);
+}
+
 /* Touch devices have no hover: keep the icon faintly visible */
 @media (hover: none) {
     .markdown-section .heading-anchor {

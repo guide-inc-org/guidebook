@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "guidebook"
-version = "0.1.74"
+version = "0.1.75"
 dependencies = [
  "anyhow",
  "asciidocr",
