@@ -710,7 +710,7 @@ fn extract_zip(data: &[u8]) -> Result<Vec<u8>> {
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        let name = file.name()?.to_string();
         if name.ends_with("guidebook.exe") || name == "guidebook.exe" {
             let mut binary = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut binary)?;
