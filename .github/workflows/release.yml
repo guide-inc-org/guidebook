@@ -52,6 +52,8 @@ jobs:
           path: ${{ matrix.artifact }}
 
   release:
+    permissions:
+      contents: write  # GitHub のリリースを作る（GITHUB_TOKEN の既定を読み取りだけにしても動くように）
     needs: build
     runs-on: ubuntu-latest
     steps:
