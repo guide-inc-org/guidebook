@@ -1,0 +1,11 @@
+# Action の版上げ。Dependabot は lockfile（.github/workflows/actions.lock）の該当の行も同じ PR で作り直す。
+# cooldown: 出たばかりの版（7 日未満）は PR にしない＝乗っ取られた版を掴む機会を減らす。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
