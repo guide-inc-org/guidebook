@@ -24,7 +24,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       # Dogfood the released binary: the docs are built with the same
       # artifact users download, not a from-source build
@@ -36,12 +36,12 @@ jobs:
       - name: Build docs
         run: ./guidebook build docs -o _site
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v5.0.0
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3.0.1
         with:
           path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v4.0.5
