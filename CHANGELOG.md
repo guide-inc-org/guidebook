@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 - HonKit compatibility, reference definitions: when a label is defined twice, the last definition wins (definitions in comments and code do not count)
 - HonKit compatibility, bold: `__bold__` touching a letter is bold when non-ASCII text is involved (`これは__太字__です`). ASCII identifiers (`SOME__NAME__HERE`), URLs, code and `\_\_` stay literal
 - HonKit compatibility, tables: cells beyond the header are kept by widening the header and the separator to the widest row with content (they used to be dropped)
+- HonKit compatibility, lists: an HTML comment between two list items no longer ends the list (the deeper item after it became a code block)
+- HonKit compatibility, links: a link destination with spaces is a link (`[text](a b.md)`), with the spaces and angle brackets percent-encoded (it stayed as text)
 - Favicon: the build now actually emits `gitbook/images/favicon.ico` / apple-touch-icon (previously only linked, always 404) and content pages link them with the depth-aware root path
 - Front matter: a `----` line no longer closes the front matter early (closing delimiter must be exactly `---`); UTF-8 BOM-prefixed files keep their front matter
 - Glossary: a `>` inside a quoted attribute value no longer breaks the tag tracker (spans were injected into attributes); `class="no-glossary"` on void/self-closing elements (`<img/>` etc.) no longer disables the glossary for the rest of the page

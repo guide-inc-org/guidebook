@@ -11,7 +11,7 @@ pub struct TocItem {
 
 /// Extract headings from markdown content for TOC generation
 pub fn extract_headings(content: &str) -> Vec<TocItem> {
-    let content = fix_heading_marker_spaces(content);
+    let content = apply_honkit_source_rules(content);
 
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -100,10 +100,10 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     // Strip all UTF-8 BOM characters (fixes reference link parsing issues)
     // BOM can appear at start of file or in concatenated content from @import
     let content = content.replace('\u{FEFF}', "");
-    // Preprocess: fix missing or full-width spaces after heading markers
-    let content = fix_heading_marker_spaces(&content);
     // Preprocess: fix image paths with spaces
     let content = fix_image_paths_with_spaces(&content);
+    // Preprocess: read the source the way HonKit does
+    let content = apply_honkit_source_rules(&content);
     // Preprocess: let the last definition of a reference label win
     let content = keep_last_reference_definitions(&content);
     // Preprocess: fix malformed table rows
@@ -235,6 +235,14 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     html_output = convert_remaining_markdown_images(&html_output);
 
     html_output
+}
+
+/// Rewrite the source where HonKit reads it differently from CommonMark, in the ways that
+/// can change headings. Shared by rendering and TOC extraction so that they agree.
+fn apply_honkit_source_rules(content: &str) -> String {
+    let content = fix_heading_marker_spaces(content);
+    let content = remove_comments_between_list_items(&content);
+    fix_link_destinations_with_spaces(&content)
 }
 
 /// Parse markdown into events, following HonKit where its inline rules differ from
@@ -576,9 +584,14 @@ fn dedent_lines(lines: &[&str]) -> Vec<String> {
 /// Convert footnote references [^n] to placeholder (before parsing)
 /// Placeholder format: %%FNREF_n%% - will be converted to HTML after markdown parsing
 ///
-/// Skips fenced code blocks and inline code spans so that literal text like
-/// the regex character class `[^abc]` is not turned into a footnote reference.
+/// Skips code so that literal text like the regex character class `[^abc]` is not
+/// turned into a footnote reference.
 fn convert_footnote_references_to_placeholder(content: &str) -> String {
+    map_outside_code(content, convert_footnote_refs_in_text)
+}
+
+/// Apply a fix to the text of a document outside fenced code blocks and inline code spans
+fn map_outside_code(content: &str, fix: impl Fn(&str) -> String) -> String {
     let mut result = String::new();
     let mut fence = FenceTracker::default();
 
@@ -586,7 +599,13 @@ fn convert_footnote_references_to_placeholder(content: &str) -> String {
         if fence.is_code_line(line) {
             result.push_str(line);
         } else {
-            result.push_str(&convert_footnote_refs_in_line(line));
+            let mut rest = line;
+            while let Some((start, end)) = find_inline_code_span(rest) {
+                result.push_str(&fix(&rest[..start]));
+                result.push_str(&rest[start..end]); // code span verbatim
+                rest = &rest[end..];
+            }
+            result.push_str(&fix(rest));
         }
         result.push('\n');
     }
@@ -594,28 +613,6 @@ fn convert_footnote_references_to_placeholder(content: &str) -> String {
     // lines() drops the trailing newline info; restore original ending
     if !content.ends_with('\n') && result.ends_with('\n') {
         result.pop();
-    }
-
-    result
-}
-
-/// Convert footnote references in a single line, leaving inline code spans untouched
-fn convert_footnote_refs_in_line(line: &str) -> String {
-    let mut result = String::new();
-    let mut rest = line;
-
-    loop {
-        match find_inline_code_span(rest) {
-            Some((start, end)) => {
-                result.push_str(&convert_footnote_refs_in_text(&rest[..start]));
-                result.push_str(&rest[start..end]); // code span verbatim
-                rest = &rest[end..];
-            }
-            None => {
-                result.push_str(&convert_footnote_refs_in_text(rest));
-                break;
-            }
-        }
     }
 
     result
@@ -972,6 +969,98 @@ fn fix_heading_marker_spaces(content: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Whether a line, without its indentation, starts a list item
+fn is_list_item(trimmed: &str) -> bool {
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    let after_marker = if digits > 0 {
+        trimmed[digits..].strip_prefix(['.', ')'])
+    } else {
+        trimmed.strip_prefix(['-', '*', '+'])
+    };
+    after_marker.is_some_and(|rest| rest.starts_with([' ', '\t']))
+}
+
+/// Remove HTML comments between the lines of a list. HonKit keeps the list going. In
+/// CommonMark the comment is an HTML block that ends the list item, and a deeper item
+/// after it becomes a code block.
+fn remove_comments_between_list_items(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::with_capacity(lines.len());
+    let mut fence = FenceTracker::default();
+    // Whether the lines since the last blank line include a list item
+    let mut in_list = false;
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+
+        if fence.is_code_line(line) {
+            result.push(line);
+            i += 1;
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if in_list && trimmed.starts_with("<!--") {
+            let close = (i..lines.len()).find(|&j| lines[j].contains("-->"));
+            // A comment that ends its line, followed by another item. Anything else may
+            // need the comment: a reference definition cannot follow the item's text.
+            let removable = close.filter(|&j| {
+                lines[j].trim_end().ends_with("-->")
+                    && lines
+                        .get(j + 1)
+                        .is_some_and(|next| is_list_item(next.trim()))
+            });
+            if let Some(close) = removable {
+                i = close + 1;
+                continue;
+            }
+        }
+
+        in_list = !trimmed.is_empty() && (in_list || is_list_item(trimmed));
+        result.push(line);
+        i += 1;
+    }
+
+    result.join("\n")
+}
+
+/// Percent-encode the spaces and angle brackets of a link destination, the way HonKit
+/// reads "[text](a b.md)". CommonMark would leave it as text.
+fn fix_link_destinations_with_spaces(content: &str) -> String {
+    map_outside_code(content, |text| {
+        let mut result = String::with_capacity(text.len());
+        let mut rest = text;
+
+        while let Some(start) = rest.find("](") {
+            let after_open = &rest[start + 2..];
+            let Some(end) = after_open.find(')') else {
+                break;
+            };
+            let destination = &after_open[..end];
+            // "<a b>" is already fine, and a quote or a parenthesis starts a title
+            let is_bare = !destination.starts_with('<') && !destination.contains(['"', '\'', '(']);
+
+            result.push_str(&rest[..start + 2]);
+            if is_bare && destination.trim().contains(' ') {
+                let encoded = destination
+                    .trim()
+                    .replace(' ', "%20")
+                    .replace('<', "%3C")
+                    .replace('>', "%3E");
+                result.push_str(&encoded);
+            } else {
+                result.push_str(destination);
+            }
+            result.push(')');
+            rest = &after_open[end + 1..];
+        }
+
+        result.push_str(rest);
+        result
+    })
 }
 
 /// Keep only the last definition of each reference label: HonKit lets the last one
@@ -2564,4 +2653,121 @@ fn test_table_in_fenced_code_is_not_widened() {
         "{}",
         html
     );
+}
+
+#[test]
+fn test_comment_between_list_lines_keeps_the_list() {
+    let html = render_markdown("- 親\n    - 子\n    <!-- メモ -->\n        - 孫\n");
+    assert!(html.contains("<li>孫</li>"), "{}", html);
+    assert!(!html.contains("<pre>"), "{}", html);
+    assert!(!html.contains("メモ"), "{}", html);
+
+    // Over several lines
+    let html = render_markdown(
+        "- 親\n    - 子\n    <!-- メモ\n        - 消した項目\n    -->\n        - 孫\n",
+    );
+    assert!(html.contains("<li>孫</li>"), "{}", html);
+    assert!(!html.contains("<pre>"), "{}", html);
+    assert!(!html.contains("消した項目"), "{}", html);
+}
+
+#[test]
+fn test_comment_outside_a_list_is_kept() {
+    // After a blank line it still separates two lists
+    let html = render_markdown("- 一\n\n<!-- メモ -->\n\n- 二\n");
+    assert!(html.contains("<!-- メモ -->"), "{}", html);
+    assert_eq!(html.matches("<ul>").count(), 2, "{}", html);
+
+    let html = render_markdown("段落\n<!-- メモ -->\n");
+    assert!(html.contains("<!-- メモ -->"), "{}", html);
+
+    // Text after the comment is not lost
+    let html = render_markdown("- 一\n  <!-- メモ --> 続き\n- 二\n");
+    assert!(html.contains("続き"), "{}", html);
+
+    // A reference definition after a list needs it: it cannot follow the item's text
+    let html = render_markdown("[リンク]\n\n- 一\n<!-- メモ -->\n[リンク]:#target\n");
+    assert!(html.contains("<a href=\"#target\">リンク</a>"), "{}", html);
+    assert!(!html.contains("[リンク]:"), "{}", html);
+}
+
+#[test]
+fn test_comment_in_code_is_kept() {
+    // In a list, followed by what looks like an item
+    let html = render_markdown("- 一\n  ```\n  <!-- メモ -->\n  - コード\n  ```\n");
+    assert!(html.contains("&lt;!-- メモ --&gt;"), "{}", html);
+
+    let html = render_markdown("- 一\n\n      コード\n      <!-- メモ -->\n      - コード\n");
+    assert!(html.contains("&lt;!-- メモ --&gt;"), "{}", html);
+
+    // Outside a list
+    let html = render_markdown("    <!-- メモ -->\n    - コード\n");
+    assert!(html.contains("&lt;!-- メモ --&gt;"), "{}", html);
+}
+
+#[test]
+fn test_link_destination_with_spaces() {
+    let html = render_markdown("[リンク](other.md#a b)");
+    assert!(
+        html.contains("<a href=\"other.html#a%20b\">リンク</a>"),
+        "{}",
+        html
+    );
+
+    // Angle brackets would not survive in a href, and the cell of a table is no different
+    let html = render_markdown("| A |\n|---|\n| [リンク](other.md#a <br>b) |\n");
+    assert!(
+        html.contains("<a href=\"other.html#a%20%3Cbr%3Eb\">リンク</a>"),
+        "{}",
+        html
+    );
+}
+
+#[test]
+fn test_link_destination_with_spaces_in_toc() {
+    let md = "## [リンク](a b)\n";
+    let toc = extract_headings(md);
+    assert_eq!(toc[0].text, "リンク");
+    let html = render_markdown(md);
+    assert!(
+        html.contains(&format!("<h2 id=\"{}\">", toc[0].id)),
+        "{}",
+        html
+    );
+}
+
+#[test]
+fn test_link_destination_forms_left_alone() {
+    let html = render_markdown("[リンク](other.md \"題\")");
+    assert!(
+        html.contains("<a href=\"other.html\" title=\"題\">リンク</a>"),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("[リンク](other.md (題))");
+    assert!(
+        html.contains("<a href=\"other.html\" title=\"題\">リンク</a>"),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("[リンク](<a b.md>)");
+    assert!(
+        html.contains("<a href=\"a%20b.html\">リンク</a>"),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("![代替](a b.png)");
+    assert!(html.contains("<img src=\"a%20b.png\""), "{}", html);
+}
+
+#[test]
+fn test_link_destination_with_spaces_in_code_is_untouched() {
+    let html = render_markdown("`[リンク](a b)`");
+    assert!(html.contains("<code>[リンク](a b)</code>"), "{}", html);
+
+    let html = render_markdown("```\n[リンク](a b)\n```\n");
+    assert!(html.contains("[リンク](a b)\n</code></pre>"), "{}", html);
 }
