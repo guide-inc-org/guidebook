@@ -5,7 +5,7 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/ci.yml':
         - 'actions/checkout@v4.4.0'
-        - 'dtolnay/rust-toolchain@stable'
+        - 'dtolnay/rust-toolchain@master'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/docs.yml':
         - 'actions/checkout@v4.4.0'
@@ -55,9 +55,9 @@ dependencies:
         repo_id: 496012378
         uses:
             - 'actions/upload-artifact@v4'
-    'dtolnay/rust-toolchain@stable':
-        ref: 'stable'
-        commit: 'sha1-b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+    'dtolnay/rust-toolchain@master':
+        ref: 'master'
+        commit: 'sha1-683b588c487a69d01f6c6ddf40f036ff682cc2c8'
         owner_id: 1940490
         repo_id: 260749683
     'softprops/action-gh-release@v1':

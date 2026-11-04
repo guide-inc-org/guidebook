@@ -16,9 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4.4.0
 
+      # @master, not @stable: upstream rebuilds @stable on top of master at every
+      # master update, so a commit locked from @stable drops out of that branch's
+      # history and the job fails at Set up job. Commits on master stay; Rust is
+      # still the stable release current at run time.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Cache cargo dependencies
@@ -54,8 +59,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4.4.0
 
+      # @master, not @stable: see the note on the check job
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2.9.3
