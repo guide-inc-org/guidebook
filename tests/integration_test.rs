@@ -941,3 +941,168 @@ fn test_output_inside_source_does_not_snowball() {
         "output dir must not be copied into itself"
     );
 }
+
+/// A page as HTML, with the slashes that the templates escape back in place
+fn read_page(path: std::path::PathBuf) -> String {
+    fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {}", path.display(), e))
+        .replace("&#x2F;", "/")
+}
+
+fn build_book(source: &std::path::Path, output: &std::path::Path) {
+    let status = Command::new(guidebook_bin())
+        .arg("build")
+        .arg(source.to_str().unwrap())
+        .arg("-o")
+        .arg(output.to_str().unwrap())
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn test_md_files_linked_from_pages_are_copied_and_no_others() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(source.join("a/notes")).unwrap();
+    fs::write(
+        source.join("SUMMARY.md"),
+        "* [Intro](README.md)\n* [Page](a/page.md)\n",
+    )
+    .unwrap();
+    fs::write(source.join("README.md"), "# Intro\n").unwrap();
+    fs::write(
+        source.join("a/page.md"),
+        "[extra](notes/extra.md) [page](page.md) [gone](notes/gone.md) [summary](../SUMMARY.md)\n",
+    )
+    .unwrap();
+    fs::write(source.join("a/notes/extra.md"), "extra\n").unwrap();
+    fs::write(source.join("a/notes/unlinked.md"), "unlinked\n").unwrap();
+    fs::write(source.join("TOOLS.md"), "notes for tools\n").unwrap();
+
+    build_book(&source, &output);
+
+    assert!(output.join("a/notes/extra.md").is_file());
+    assert!(!output.join("a/notes/unlinked.md").exists());
+    assert!(!output.join("TOOLS.md").exists());
+    // The summary is not copied, like in HonKit
+    assert!(!output.join("SUMMARY.md").exists());
+
+    let page = read_page(output.join("a/page.html"));
+    assert!(page.contains("notes/extra.md\""), "{}", page);
+    assert!(page.contains("page.html\""), "{}", page);
+    assert!(page.contains("notes/gone.md\""), "{}", page);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_md_file_linked_through_a_symlink_out_of_the_source_is_not_copied() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(temp.path().join("secret.md"), "secret\n").unwrap();
+    std::os::unix::fs::symlink(temp.path().join("secret.md"), source.join("link.md")).unwrap();
+    fs::write(source.join("SUMMARY.md"), "* [Intro](README.md)\n").unwrap();
+    fs::write(source.join("README.md"), "[link](link.md)\n").unwrap();
+
+    build_book(&source, &output);
+
+    assert!(!output.join("link.md").exists());
+}
+
+#[test]
+fn test_summary_paths_of_a_language_lead_to_the_built_pages() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(source.join("en/sec")).unwrap();
+    fs::create_dir_all(source.join("ja")).unwrap();
+    fs::write(
+        source.join("LANGS.md"),
+        "* [English](en/)\n* [Japanese](ja/)\n",
+    )
+    .unwrap();
+    fs::write(
+        source.join("en/SUMMARY.md"),
+        "* [Intro](README.md)\n\
+         * [Rooted](/sec/rooted.md)\n\
+         * [No such file](sec/gone.md)\n\
+         \x20 * [No such file below](sec/gone-too.md)\n\
+         * [Generated](/api-docs/index.html)\n",
+    )
+    .unwrap();
+    fs::write(source.join("en/README.md"), "# Intro\n").unwrap();
+    fs::write(source.join("en/sec/rooted.md"), "# Rooted\n").unwrap();
+    fs::write(source.join("ja/SUMMARY.md"), "* [Intro](README.md)\n").unwrap();
+    fs::write(source.join("ja/README.md"), "# Intro\n").unwrap();
+
+    build_book(&source, &output);
+
+    // A page in the language's directory: a rooted path is from the language's root
+    let intro = read_page(output.join("en/index.html"));
+    assert!(intro.contains("href=\"./sec/rooted.html\""), "{}", intro);
+    let rooted = read_page(output.join("en/sec/rooted.html"));
+    assert!(rooted.contains("href=\"../sec/rooted.html\""), "{}", rooted);
+    assert!(
+        rooted.contains("href=\"../gitbook/gitbook.css\""),
+        "{}",
+        rooted
+    );
+    // What is not a page is from the root of the site
+    assert!(
+        intro.contains("href=\".././api-docs/index.html\""),
+        "{}",
+        intro
+    );
+    assert!(
+        rooted.contains("href=\"../../api-docs/index.html\""),
+        "{}",
+        rooted
+    );
+
+    // An item with no file stays as text, not as a link to a page that was not built
+    assert!(intro.contains(">No such file</span>"), "{}", intro);
+    assert!(!intro.contains("gone.html"), "{}", intro);
+    assert!(intro.contains(">No such file below</span>"), "{}", intro);
+    assert!(!intro.contains("gone-too.html"), "{}", intro);
+    assert!(!output.join("en/sec/gone.html").exists());
+}
+
+#[test]
+fn test_summary_links_to_other_sites_open_there() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(source.join("a")).unwrap();
+    fs::write(
+        source.join("SUMMARY.md"),
+        "* [Intro](README.md)\n\
+         * [Page](a/page.md)\n\
+         * [Elsewhere](https://example.com/a.md)\n\
+         * [Mail](mailto:someone@example.com)\n\
+         * [Next](a/next.md)\n",
+    )
+    .unwrap();
+    fs::write(source.join("README.md"), "# Intro\n").unwrap();
+    fs::write(source.join("a/page.md"), "# Page\n").unwrap();
+    fs::write(source.join("a/next.md"), "# Next\n").unwrap();
+
+    build_book(&source, &output);
+
+    let page = read_page(output.join("a/page.html"));
+    assert!(
+        page.contains("<a href=\"https://example.com/a.md\" target=\"_blank\">Elsewhere</a>"),
+        "{}",
+        page
+    );
+    assert!(
+        page.contains("<a href=\"mailto:someone@example.com\" target=\"_blank\">Mail</a>"),
+        "{}",
+        page
+    );
+    // The next page is a page of the book
+    let next = page.find("page-nav next").unwrap();
+    assert!(page[next..].contains("href=\"../a/next.html\""), "{}", page);
+}

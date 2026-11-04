@@ -1,5 +1,7 @@
+use percent_encoding::percent_decode_str;
 use pulldown_cmark::{html, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 /// Table of Contents item
@@ -63,9 +65,138 @@ pub fn extract_headings(content: &str) -> Vec<TocItem> {
     headings
 }
 
+/// The pages of a site, for reading the `.md` links on them the way HonKit does: a link to a
+/// page goes to its `.html`. A link to any other file stays as it is, and the file is
+/// copied. All paths are relative to the root of the site, and a language's prefix is a part
+/// of them.
+#[derive(Default)]
+pub struct BookLinks {
+    /// The source paths of the pages
+    pages: HashSet<String>,
+    /// The source paths of the READMEs that only have an index.html: not in the summary
+    homes_only: HashSet<String>,
+    /// The `.md` files that the pages link to and that are not pages
+    linked_files: RefCell<BTreeSet<String>>,
+}
+
+impl BookLinks {
+    /// Add a page, by its path from the root of the site
+    pub fn add_page(&mut self, path: &str) {
+        if let Some(path) = normalize_site_path(path) {
+            self.homes_only.remove(&path);
+            self.pages.insert(path);
+        }
+    }
+
+    /// Add the README of a book, which HonKit always builds as its index.html
+    pub fn add_home(&mut self, path: &str) {
+        if let Some(path) = normalize_site_path(path) {
+            if !self.pages.contains(&path) {
+                self.homes_only.insert(path);
+            }
+        }
+    }
+
+    /// The files that the pages rendered so far link to and that are not pages
+    pub fn linked_files(&self) -> Vec<String> {
+        self.linked_files.borrow().iter().cloned().collect()
+    }
+
+    /// What a `.md` link on the page at current_path becomes
+    fn resolve(&self, current_path: &str, url: &str) -> String {
+        let Some(file) = md_link_file(url) else {
+            return url.to_string();
+        };
+        let current_dir = current_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let target = match file.strip_prefix('/') {
+            Some(from_root) => from_root.to_string(),
+            None => format!("{}/{}", current_dir, file),
+        };
+        let Some(target) = normalize_site_path(&target) else {
+            return url.to_string();
+        };
+
+        if self.pages.contains(&target) {
+            return fix_md_extension(url);
+        }
+        if self.homes_only.contains(&target) {
+            return url.replacen("README.md", "index.html", 1);
+        }
+        self.linked_files.borrow_mut().insert(target);
+        url.to_string()
+    }
+}
+
+/// The file that a link with a `.md` file goes to, decoded, or None for any other link
+fn md_link_file(url: &str) -> Option<String> {
+    if has_url_scheme(url) || url.starts_with("//") {
+        return None;
+    }
+    let file = url.split(['#', '?']).next().unwrap_or("");
+    if !file.ends_with(".md") {
+        return None;
+    }
+    let file = file
+        .replace("&amp;", "&")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'");
+    let file = percent_decode_str(&file).decode_utf8().ok()?;
+    Some(file.into_owned())
+}
+
+/// Whether a URL starts with a scheme ("https:", "mailto:", ...)
+pub(crate) fn has_url_scheme(url: &str) -> bool {
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// Resolve the `.` and `..` of a path from the root of the site. None if it goes out of it.
+pub(crate) fn normalize_site_path(path: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Render a page of a site: like render_markdown_with_path, with the links read by links
+pub fn render_book_page(
+    content: &str,
+    current_path: &str,
+    hardbreaks: bool,
+    links: &BookLinks,
+) -> String {
+    let content = content.replace("\r\n", "\n").replace("\r", "\n");
+    let html = render_markdown_internal(&content, hardbreaks, Some((links, current_path)));
+    convert_relative_links_to_absolute(&html, current_path)
+}
+
+/// Render the README of a book for its index.html, with the links read by links
+pub fn render_book_home(
+    content: &str,
+    current_path: &str,
+    hardbreaks: bool,
+    links: &BookLinks,
+) -> String {
+    let content = content.replace("\r\n", "\n").replace("\r", "\n");
+    render_markdown_internal(&content, hardbreaks, Some((links, current_path)))
+}
+
 /// Render markdown content to HTML with Mermaid support
 /// current_path: the path of the current markdown file (e.g., "Customer/AssetStatus/PortfolioTop.md")
 /// hardbreaks: when true, treat single newlines as hard breaks (<br>)
+#[cfg(test)]
 pub fn render_markdown_with_path(
     content: &str,
     current_path: Option<&str>,
@@ -73,7 +204,7 @@ pub fn render_markdown_with_path(
 ) -> String {
     // Normalize CRLF/CR to LF for consistent line handling
     let content = content.replace("\r\n", "\n").replace("\r", "\n");
-    let html = render_markdown_internal(&content, hardbreaks);
+    let html = render_markdown_internal(&content, hardbreaks, None);
 
     // If we have a current path, convert relative links to absolute
     if let Some(path) = current_path {
@@ -87,17 +218,14 @@ pub fn render_markdown_with_path(
 pub fn render_markdown(content: &str) -> String {
     // Normalize CRLF/CR to LF for consistent line handling
     let content = content.replace("\r\n", "\n").replace("\r", "\n");
-    render_markdown_internal(&content, false)
+    render_markdown_internal(&content, false, None)
 }
 
-/// Render markdown content to HTML with hardbreaks option
-pub fn render_markdown_with_hardbreaks(content: &str, hardbreaks: bool) -> String {
-    // Normalize CRLF/CR to LF for consistent line handling
-    let content = content.replace("\r\n", "\n").replace("\r", "\n");
-    render_markdown_internal(&content, hardbreaks)
-}
-
-fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
+fn render_markdown_internal(
+    content: &str,
+    hardbreaks: bool,
+    book_links: Option<(&BookLinks, &str)>,
+) -> String {
     // Strip all UTF-8 BOM characters (fixes reference link parsing issues)
     // BOM can appear at start of file or in concatenated content from @import
     let content = content.replace('\u{FEFF}', "");
@@ -219,7 +347,12 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     html_output = convert_footnote_placeholders_to_html(&html_output);
 
     // Fix relative links: convert .md to .html
-    html_output = fix_relative_links(&html_output);
+    html_output = match book_links {
+        Some((links, current_path)) => {
+            rewrite_hrefs(&html_output, |url| links.resolve(current_path, url))
+        }
+        None => fix_relative_links(&html_output),
+    };
 
     // Note: Root-relative links (starting with /) are handled in convert_relative_links_to_absolute()
     // which has access to the current file path and can calculate the correct relative path
@@ -252,7 +385,10 @@ fn render_options() -> Options {
 fn apply_honkit_source_rules(content: &str) -> String {
     // First: a comment that goes changes how the lines after it are read
     let content = remove_comments_between_list_items(content);
+    let content = keep_lines_in_open_list_items(&content);
+    let content = keep_inline_tags_in_paragraphs(&content);
     let content = fix_heading_marker_spaces(&content);
+    let content = keep_braces_at_heading_ends(&content);
     fix_link_destinations_with_spaces(&content)
 }
 
@@ -1229,7 +1365,11 @@ fn fix_heading_marker_spaces(content: &str) -> String {
             }
 
             let starts_text = after_hashes.chars().next().is_some_and(|c| {
-                !c.is_whitespace() && (c.is_alphanumeric() || !c.is_ascii() || "[(*_`<".contains(c))
+                !c.is_whitespace()
+                    && (c.is_alphanumeric()
+                        || !c.is_ascii()
+                        || "[(*_`<".contains(c)
+                        || (c == '-' && !after_hashes.chars().all(|c| matches!(c, '-' | '#'))))
             });
             if starts_text && indent_width(leading_whitespace) <= 3 {
                 return format!("{}{} {}", leading_whitespace, marker, after_hashes);
@@ -1247,6 +1387,302 @@ fn indent_width(indentation: &str) -> usize {
         '\t' => width + 4 - width % 4,
         _ => width + 1,
     })
+}
+
+/// `{id}` at the end of a heading is a part of its text in HonKit, which only reads
+/// `{#id}`. pulldown-cmark reads it as an attribute and takes it out of the text, as in
+/// "GET /users/{id}". Headings with an id, a class or a `key=value` are left to it.
+fn keep_braces_at_heading_ends(content: &str) -> String {
+    let mut closing_braces = Vec::new();
+    for (event, range) in Parser::new_ext(content, render_options()).into_offset_iter() {
+        let Event::Start(Tag::Heading {
+            id, classes, attrs, ..
+        }) = &event
+        else {
+            continue;
+        };
+        if id.is_some() || !classes.is_empty() || attrs.iter().any(|(_, value)| value.is_some()) {
+            continue;
+        }
+        if let Some(at) = heading_closing_brace(&content[range.clone()]) {
+            closing_braces.push(range.start + at);
+        }
+    }
+
+    let mut result = content.to_string();
+    for at in closing_braces.into_iter().rev() {
+        result.replace_range(at..at + 1, "&#125;");
+    }
+    result
+}
+
+/// The offset of the `}` that ends the text of a heading's source, if one does
+fn heading_closing_brace(heading: &str) -> Option<usize> {
+    let mut text = heading.trim_end();
+    // A setext heading: the text is above the underline
+    if let Some((above, underline)) = text.rsplit_once('\n') {
+        let underline = underline.trim();
+        if !underline.is_empty() && underline.chars().all(|c| matches!(c, '=' | '-')) {
+            text = above.trim_end();
+        }
+    }
+    text.ends_with('}').then(|| text.len() - 1)
+}
+
+/// The tags that HonKit reads as a part of a text. See keep_inline_tags_in_paragraphs. Not
+/// "code", which HonKit reads the same way: what a code element holds stays as it is written.
+const HONKIT_INLINE_TAGS: &[&str] = &[
+    "a", "em", "strong", "small", "s", "cite", "q", "dfn", "abbr", "data", "time", "var", "samp",
+    "kbd", "sub", "sup", "i", "b", "u", "mark", "ruby", "rt", "rp", "bdi", "bdo", "span", "br",
+    "wbr", "ins", "del", "img",
+];
+
+/// Whether a line holds one of HONKIT_INLINE_TAGS and nothing else
+fn is_lone_inline_tag(line: &str) -> bool {
+    let line = line.trim();
+    let Some(tag) = line.strip_prefix('<').and_then(|l| l.strip_suffix('>')) else {
+        return false;
+    };
+    if tag.contains(['<', '>']) {
+        return false;
+    }
+    let name = tag.strip_prefix('/').unwrap_or(tag);
+    let name_end = name
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(name.len());
+    HONKIT_INLINE_TAGS.contains(&name[..name_end].to_ascii_lowercase().as_str())
+}
+
+/// A line with nothing but an inline tag, like `<span class="x">`, starts a paragraph in
+/// HonKit. In CommonMark it starts an HTML block, and the lines up to the next blank line
+/// are not read as Markdown. Anything after the tag on its line keeps the line from starting
+/// a block; an empty comment does not show.
+fn keep_inline_tags_in_paragraphs(content: &str) -> String {
+    let mut line_ends = Vec::new();
+    for (event, range) in Parser::new_ext(content, render_options()).into_offset_iter() {
+        if !matches!(event, Event::Start(Tag::HtmlBlock)) {
+            continue;
+        }
+        let block = &content[range.clone()];
+        let first_line = block.lines().next().unwrap_or("");
+        if is_lone_inline_tag(first_line) {
+            line_ends.push(range.start + first_line.len());
+        }
+    }
+
+    let mut result = content.to_string();
+    for at in line_ends.into_iter().rev() {
+        result.insert_str(at, "<!-- -->");
+    }
+    result
+}
+
+/// Whether an HTML block that starts with this line can go on after a blank line: a comment,
+/// `<pre>`, `<script>`, `<style>`, `<textarea>`, `<!...>` or `<?...>`
+fn html_block_crosses_blank_lines(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("<!")
+        || lower.starts_with("<?")
+        || ["<pre", "<script", "<style", "<textarea"]
+            .iter()
+            .any(|tag| lower.starts_with(tag))
+}
+
+/// The column where the text of a list item starts, given where its marker starts
+fn list_item_text_column(indent: usize, trimmed: &str) -> usize {
+    let marker = trimmed.find([' ', '\t']).unwrap_or(trimmed.len());
+    let after_marker = &trimmed[marker..];
+    let rest = after_marker.trim_start_matches([' ', '\t']);
+    let spaces = indent_width(&after_marker[..after_marker.len() - rest.len()]);
+    indent + marker + if (1..=4).contains(&spaces) { spaces } else { 1 }
+}
+
+/// A list item that is open while keep_lines_in_open_list_items reads the source
+struct OpenListItem {
+    /// The columns of the marker and the text, as written
+    marker: usize,
+    text: usize,
+    /// How far the item is moved
+    shift: usize,
+}
+
+/// Where a list item goes among the open items, the way HonKit reads the indentation. Each
+/// list strips the indentation of its items from their lines and reads what is left, so:
+/// - A marker at the column of an open item is the next item of that item's list
+/// - After a blank line, a marker with no indentation left ends the list at that level
+/// - Any other marker is inside the deepest open item, however little it is indented
+enum ListItemPlace {
+    SiblingOf(usize),
+    EndsListAt(usize),
+    InsideDeepest,
+}
+
+fn list_item_place(open: &[OpenListItem], indent: usize, after_blank_line: bool) -> ListItemPlace {
+    let mut stripped = 0;
+    for (level, item) in open.iter().enumerate() {
+        let left = indent.saturating_sub(stripped);
+        if left == item.marker - stripped.min(item.marker) {
+            return ListItemPlace::SiblingOf(level);
+        }
+        if after_blank_line && left == 0 {
+            return ListItemPlace::EndsListAt(level);
+        }
+        stripped = item.text;
+    }
+    ListItemPlace::InsideDeepest
+}
+
+/// Open the list items that start on a line: "- 1. text" is an item in an item
+fn push_list_items(open: &mut Vec<OpenListItem>, indent: usize, trimmed: &str, shift: usize) {
+    let mut marker = indent;
+    let mut rest = trimmed;
+    loop {
+        let text = list_item_text_column(marker, rest);
+        open.push(OpenListItem {
+            marker,
+            text,
+            shift,
+        });
+        let after_marker = rest.find([' ', '\t']).map_or("", |at| &rest[at..]);
+        rest = after_marker.trim_start_matches([' ', '\t']);
+        if !is_list_item(rest) {
+            return;
+        }
+        marker = text;
+    }
+}
+
+/// Close the items that a line after a blank line is not in: in each list, HonKit strips the
+/// indentation of the items from their lines, and a line with no indentation left ends it
+fn close_list_items_before(open: &mut Vec<OpenListItem>, indent: usize) {
+    while !open.is_empty() {
+        let around = open.len().checked_sub(2).map_or(0, |at| open[at].text);
+        if indent > around {
+            return;
+        }
+        open.pop();
+    }
+}
+
+/// Whether a line, without its indentation, is a heading to HonKit: it needs no space after
+/// the hashes
+fn is_atx_heading_in_honkit(trimmed: &str) -> bool {
+    let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+    (1..=6).contains(&hashes) && !trimmed[hashes..].trim().is_empty()
+}
+
+/// Indent the lines of the lists so that CommonMark reads the structure that HonKit does. The
+/// two read indentation differently:
+/// - After a blank line, HonKit keeps a line in the open item for as long as it is indented
+///   more than the text of the item around that one. CommonMark also wants it indented as
+///   far as the item's own text: the line ends the item, and the deeper items after it
+///   become a code block.
+/// - See ListItemPlace for the markers. CommonMark reads a marker that is indented a little
+///   differently from the items before it as the next item of their list.
+///
+/// - HonKit keeps a heading or a code fence that follows the text of an item in the item.
+///   In CommonMark, it ends the list if it is not indented as far as the item's text.
+///
+/// Lines that are indented as far as a code block stay what they are in CommonMark: a code
+/// block after a blank line and the text going on otherwise, where HonKit makes a code block
+/// of a line that was just indented too far.
+fn keep_lines_in_open_list_items(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let kinds = line_kinds(content);
+    let mut result = Vec::with_capacity(lines.len());
+    let mut fence = FenceTracker::default();
+    let mut open: Vec<OpenListItem> = Vec::new();
+    let mut after_blank_line = false;
+    // How far the lines since the last blank line are moved, on top of the item's shift
+    let mut moved_by = 0;
+    // How far the lines of the open code fence are moved, on top of the item's shift
+    let mut fence_moved_by = 0;
+
+    let reindent = |line: &str, by: usize| {
+        if by == 0 {
+            return line.to_string();
+        }
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        let indent = indent_width(&line[..line.len() - trimmed.len()]);
+        format!("{}{}", " ".repeat(indent + by), trimmed)
+    };
+
+    for (i, &line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        let indent = indent_width(&line[..line.len() - trimmed.len()]);
+
+        let fence_was_open = fence.is_open();
+        if fence.is_code_line(line) {
+            if !fence_was_open {
+                if after_blank_line {
+                    close_list_items_before(&mut open, indent);
+                }
+                fence_moved_by = open
+                    .last()
+                    .map_or(0, |item| item.text.saturating_sub(indent));
+            }
+            let shift = open.last().map_or(0, |item| item.shift);
+            result.push(reindent(line, shift + fence_moved_by));
+            after_blank_line = false;
+            continue;
+        }
+        fence_moved_by = 0;
+
+        if kinds[i] == LineKind::RawHtml && moved_by == 0 {
+            let shift = open.last().map_or(0, |item| item.shift);
+            result.push(reindent(line, shift));
+            after_blank_line = false;
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            result.push(line.to_string());
+            after_blank_line = true;
+            moved_by = 0;
+            continue;
+        }
+
+        if is_list_item(trimmed) {
+            moved_by = 0;
+            let to = match list_item_place(&open, indent, after_blank_line) {
+                ListItemPlace::SiblingOf(level) => {
+                    let to = open[level].marker + open[level].shift;
+                    open.truncate(level);
+                    Some(to)
+                }
+                ListItemPlace::EndsListAt(level) => {
+                    open.truncate(level);
+                    Some(open.last().map_or(indent, |item| item.text + item.shift))
+                }
+                ListItemPlace::InsideDeepest => {
+                    let (around, shift) =
+                        open.last().map_or((0, 0), |item| (item.text, item.shift));
+                    let is_code = indent >= around + 4;
+                    (!is_code).then_some(around.max(indent) + shift)
+                }
+            };
+            if let Some(to) = to {
+                push_list_items(&mut open, indent, trimmed, to.saturating_sub(indent));
+            }
+        } else if moved_by == 0 && after_blank_line {
+            close_list_items_before(&mut open, indent);
+            let crosses_blank_lines =
+                kinds[i] == LineKind::RawHtmlStart && html_block_crosses_blank_lines(trimmed);
+            if let (Some(item), false) = (open.last(), crosses_blank_lines) {
+                moved_by = item.text.saturating_sub(indent);
+            }
+        } else if moved_by == 0 && is_atx_heading_in_honkit(trimmed) {
+            moved_by = open
+                .last()
+                .map_or(0, |item| item.text.saturating_sub(indent));
+        }
+
+        after_blank_line = false;
+        let shift = open.last().map_or(0, |item| item.shift);
+        result.push(reindent(line, shift + moved_by));
+    }
+
+    result.join("\n")
 }
 
 /// Whether a line, without its indentation, starts a list item
@@ -1319,6 +1755,11 @@ fn remove_list_comments_in_one_pass(content: &str) -> Option<String> {
 /// Percent-encode the spaces and angle brackets of a link destination, the way HonKit
 /// reads "[text](a b.md)". CommonMark would leave it as text.
 fn fix_link_destinations_with_spaces(content: &str) -> String {
+    let labels: HashSet<String> = content
+        .lines()
+        .filter_map(reference_definition_label)
+        .collect();
+
     map_markdown_text(content, |text| {
         let mut result = String::with_capacity(text.len());
         let mut rest = text;
@@ -1335,7 +1776,9 @@ fn fix_link_destinations_with_spaces(content: &str) -> String {
             let is_bare = !path.starts_with('<') && !path.contains('(');
 
             result.push_str(&rest[..start + 2]);
-            if is_bare && path.contains(' ') {
+            // In "[text][label](a b)" with a defined label, HonKit and CommonMark read a
+            // reference link, and the parentheses are text after it
+            if is_bare && path.contains(' ') && !closes_reference_label(&rest[..start], &labels) {
                 let encoded = path
                     .replace(' ', "%20")
                     .replace('<', "%3C")
@@ -1352,6 +1795,15 @@ fn fix_link_destinations_with_spaces(content: &str) -> String {
         result.push_str(rest);
         result
     })
+}
+
+/// Whether `before`, the text up to a `]`, ends in the `[label` of a `[text][label]` with a
+/// defined label
+fn closes_reference_label(before: &str, labels: &HashSet<String>) -> bool {
+    let Some(open) = before.rfind('[') else {
+        return false;
+    };
+    before[..open].ends_with(']') && labels.contains(&normalize_label(&before[open + 1..]))
 }
 
 /// Split `path "title"` into the path and the title (with the space before it). HonKit
@@ -1418,13 +1870,16 @@ fn reference_definition_label(line: &str) -> Option<String> {
         return None;
     }
 
-    Some(
-        label
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase(),
-    )
+    Some(normalize_label(label))
+}
+
+/// A reference label in the form to compare it in
+fn normalize_label(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Whether the text after "[label]:" is a destination with an optional title. Any other
@@ -1546,6 +2001,10 @@ fn fix_image_paths_in_text(content: &str) -> String {
 }
 
 fn fix_relative_links(html: &str) -> String {
+    rewrite_hrefs(html, fix_md_extension)
+}
+
+fn rewrite_hrefs(html: &str, rewrite: impl Fn(&str) -> String) -> String {
     // Replace .md links with .html, but ONLY inside href attribute values.
     // A blind string replace would also rewrite occurrences in visible text,
     // e.g. `chapter1.md#section` inside <code>.
@@ -1586,7 +2045,7 @@ fn fix_relative_links(html: &str) -> String {
                 let mut closed = false;
                 for (_, ch) in chars.by_ref() {
                     if ch == quote_char {
-                        result.push_str(&fix_md_extension(&url));
+                        result.push_str(&rewrite(&url));
                         result.push(quote_char);
                         closed = true;
                         break;
@@ -1605,8 +2064,12 @@ fn fix_relative_links(html: &str) -> String {
     normalize_path_separators(&result)
 }
 
-/// Convert a `.md` extension in a URL to `.html` (also handles `.md#anchor`)
+/// Convert a `.md` extension in a URL to `.html` (also handles `.md#anchor`). A link out of
+/// the book stays as it is: another site's `.md` has no `.html`.
 fn fix_md_extension(url: &str) -> String {
+    if has_url_scheme(url) || url.starts_with("//") {
+        return url.to_string();
+    }
     if let Some(stripped) = url.strip_suffix(".md") {
         format!("{}.html", stripped)
     } else if let Some(pos) = url.find(".md#") {
@@ -3576,4 +4039,241 @@ fn test_footnote_continuation_is_read_as_markdown() {
 
     let html = render_markdown("![代替][a]\n\n[^1]: 注\n    [a]: first.png\n    [a]: last.png\n");
     assert!(html.contains("<img src=\"last.png\""), "{}", html);
+}
+
+/// The HTML without its whitespace, to compare the structure of a list
+#[cfg(test)]
+fn without_whitespace(html: &str) -> String {
+    html.split_whitespace().collect()
+}
+
+#[test]
+fn test_list_items_nest_by_the_indentation_of_their_own_list() {
+    // HonKit: an item only ends at a marker with the same indentation
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n   - two\n  - three\n- four\n")),
+        "<ul><li>one<ul><li>two<ul><li>three</li></ul></li></ul></li><li>four</li></ul>"
+    );
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n     - two\n    - three\n")),
+        "<ul><li>one<ul><li>two<ul><li>three</li></ul></li></ul></li></ul>"
+    );
+    // Siblings with the same indentation stay siblings
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n    - two\n    - three\n- four\n")),
+        "<ul><li>one<ul><li>two</li><li>three</li></ul></li><li>four</li></ul>"
+    );
+}
+
+#[test]
+fn test_list_item_strips_the_indentation_of_the_items_around_it() {
+    assert_eq!(
+        without_whitespace(&render_markdown("- a\n - b\n  - c\n")),
+        "<ul><li>a<ul><li>b</li><li>c</li></ul></li></ul>"
+    );
+}
+
+#[test]
+fn test_marker_in_a_code_block_of_a_list_item_opens_no_item() {
+    let html = render_markdown("- one\n\n        - code\n         - more\n");
+    assert!(html.contains("<pre><code>  - code\n   - more"), "{}", html);
+}
+
+#[test]
+fn test_list_item_with_two_markers_on_a_line() {
+    assert_eq!(
+        without_whitespace(&render_markdown("- 1. one\n    - two\n")),
+        "<ul><li><ol><li>one<ul><li>two</li></ul></li></ol></li></ul>"
+    );
+    assert_eq!(
+        without_whitespace(&render_markdown(
+            "- 1. one\n     - two\n     - three\n- four\n"
+        )),
+        "<ul><li><ol><li>one<ul><li>two</li><li>three</li></ul></li></ol></li><li>four</li></ul>"
+    );
+}
+
+#[test]
+fn test_lines_after_a_blank_line_stay_in_the_deepest_list_item_they_reach() {
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n    - two\n\n    text\n")),
+        "<ul><li><p>one</p><ul><li><p>two</p><p>text</p></li></ul></li></ul>"
+    );
+    // With no indentation, they end the list
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n    - two\n\ntext\n")),
+        "<ul><li>one<ul><li>two</li></ul></li></ul><p>text</p>"
+    );
+}
+
+#[test]
+fn test_fence_and_heading_right_after_a_list_item_stay_in_it() {
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n```\ncode\nmore\n```\n- two\n")),
+        "<ul><li>one<pre><code>codemore</code></pre></li><li>two</li></ul>"
+    );
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n### Title\n- two\n")),
+        "<ul><li>one<h3id=\"title\">Title</h3></li><li>two</li></ul>"
+    );
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n##Title\n")),
+        "<ul><li>one<h2id=\"title\">Title</h2></li></ul>"
+    );
+    // After a blank line, they end the list
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n\n```\ncode\n```\n")),
+        "<ul><li>one</li></ul><pre><code>code</code></pre>"
+    );
+    assert_eq!(
+        without_whitespace(&render_markdown("- one\n\n### Title\n")),
+        "<ul><li>one</li></ul><h3id=\"title\">Title</h3>"
+    );
+}
+
+#[test]
+fn test_heading_lines_that_stay_in_a_list_item() {
+    assert!(is_atx_heading_in_honkit("##Title"));
+    assert!(is_atx_heading_in_honkit("### Title"));
+    assert!(!is_atx_heading_in_honkit("#"));
+    assert!(!is_atx_heading_in_honkit("####### seven"));
+    assert!(!is_atx_heading_in_honkit("text"));
+}
+
+#[test]
+fn test_list_item_number_other_than_one_stays_in_the_text() {
+    // A case where HonKit restarts the numbers at 1: the number as written stays
+    let html = render_markdown("- one\n  2. two\n");
+    assert!(!html.contains("<ol"), "{}", html);
+    assert!(html.contains("2. two"), "{}", html);
+}
+
+#[test]
+fn test_code_block_in_a_list_item_stays_code() {
+    let html = render_markdown("- one\n\n        code\n- two\n");
+    assert!(html.contains("<pre><code>  code"), "{}", html);
+    assert_eq!(html.matches("<li>").count(), 2, "{}", html);
+}
+
+#[test]
+fn test_lone_inline_tag_is_a_part_of_a_paragraph() {
+    let html = render_markdown("<span class=\"x\">\n**text**\n</span>\n");
+    assert!(html.starts_with("<p><span class=\"x\">"), "{}", html);
+    assert!(html.contains("<strong>text</strong>"), "{}", html);
+
+    let html = render_markdown("<br>\n");
+    assert!(html.starts_with("<p><br>"), "{}", html);
+
+    let html = render_markdown("<MARK>\ntext\n</MARK>\n");
+    assert!(html.starts_with("<p><MARK>"), "{}", html);
+
+    // A block element stays a block, and so does a tag that only starts like an inline one
+    let html = render_markdown("<div>\n**text**\n</div>\n");
+    assert!(html.contains("**text**"), "{}", html);
+    let html = render_markdown("<spanish>\n**text**\n</spanish>\n");
+    assert!(html.contains("**text**"), "{}", html);
+    // More than the tag on its line
+    assert!(!is_lone_inline_tag("<span>text</span>"));
+    assert!(!is_lone_inline_tag("<span><b>"));
+    assert!(is_lone_inline_tag("  </span>  "));
+    assert!(is_lone_inline_tag("<br/>"));
+}
+
+#[test]
+fn test_braces_at_the_end_of_a_heading_stay() {
+    let html = render_markdown("### Title {name}\n");
+    assert!(html.contains(">Title {name}</h3>"), "{}", html);
+    let html = render_markdown("Title {name}\n=====\n");
+    assert!(html.contains(">Title {name}</h1>"), "{}", html);
+
+    // An id stays an id
+    let html = render_markdown("### Title {#my-id}\n");
+    assert!(html.contains("id=\"my-id\""), "{}", html);
+    assert!(!html.contains('{'), "{}", html);
+}
+
+#[test]
+fn test_reference_link_followed_by_parentheses() {
+    // A defined label ends the link, and the parentheses are text
+    let html = render_markdown("[a][b](c d)\n\n[b]: e.png\n");
+    assert!(html.contains("<a href=\"e.png\">a</a>(c d)"), "{}", html);
+
+    // No such label: the second brackets and the parentheses are a link
+    let html = render_markdown("[a][x](c d)\n");
+    assert!(html.contains("[a]<a href=\"c%20d\">x</a>"), "{}", html);
+}
+
+#[test]
+fn test_heading_marker_followed_by_a_hyphen_and_text() {
+    let html = render_markdown("###-text\n");
+    assert!(html.contains(">-text</h3>"), "{}", html);
+
+    // A mask, not a heading
+    let html = render_markdown("###-###\n");
+    assert!(!html.contains("<h3"), "{}", html);
+}
+
+#[test]
+fn test_md_links_to_other_sites_stay() {
+    let html = render_markdown("[a](https://example.com/a.md) [b](//example.com/b.md)\n");
+    assert!(
+        html.contains("href=\"https://example.com/a.md\""),
+        "{}",
+        html
+    );
+    assert!(html.contains("href=\"//example.com/b.md\""), "{}", html);
+}
+
+#[test]
+fn test_book_links_read_md_links_by_what_is_a_page() {
+    let mut links = BookLinks::default();
+    links.add_page("en/a/page.md");
+    links.add_page("ja/b/other.md");
+    links.add_page("ja/../en/moved.md");
+    links.add_home("en/README.md");
+    links.add_home("en/a/README.md");
+    links.add_page("en/a/README.md");
+
+    let page = "en/a/page.md";
+    assert_eq!(links.resolve(page, "page.md"), "page.html");
+    assert_eq!(links.resolve(page, "page.md#part"), "page.html#part");
+    assert_eq!(
+        links.resolve(page, "../../ja/b/other.md"),
+        "../../ja/b/other.html"
+    );
+    assert_eq!(links.resolve(page, "/en/moved.md"), "/en/moved.html");
+    assert_eq!(links.resolve(page, "README.md"), "README.html");
+    // A README that only has an index.html
+    assert_eq!(links.resolve(page, "../README.md"), "../index.html");
+    assert!(links.linked_files().is_empty());
+
+    // Anything else stays, and the file gets copied
+    assert_eq!(
+        links.resolve(page, "notes/extra.md#part"),
+        "notes/extra.md#part"
+    );
+    assert_eq!(links.resolve(page, "with%20space.md"), "with%20space.md");
+    assert_eq!(
+        links.linked_files(),
+        ["en/a/notes/extra.md", "en/a/with space.md"]
+    );
+
+    // Out of the site, other sites and other files are none of its business
+    assert_eq!(links.resolve(page, "../../../up.md"), "../../../up.md");
+    assert_eq!(
+        links.resolve(page, "https://example.com/a.md"),
+        "https://example.com/a.md"
+    );
+    assert_eq!(links.resolve(page, "image.png"), "image.png");
+    assert_eq!(links.linked_files().len(), 2);
+}
+
+#[test]
+fn test_normalize_site_path() {
+    assert_eq!(
+        normalize_site_path("a/./b/../c.md").as_deref(),
+        Some("a/c.md")
+    );
+    assert_eq!(normalize_site_path("a/../../b.md"), None);
+    assert_eq!(normalize_site_path("../b.md"), None);
 }

@@ -25,7 +25,7 @@ static IMPORT_REGEX: LazyLock<Regex> =
 // nunjucks module is used internally for template processing
 pub use renderer::{
     extract_headings, extract_headings_from_asciidoc, render_asciidoc, render_asciidoc_with_path,
-    render_markdown, render_markdown_with_hardbreaks, render_markdown_with_path, TocItem,
+    render_book_home, render_book_page, render_markdown, BookLinks, TocItem,
 };
 pub use template::Templates;
 
@@ -92,10 +92,19 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
         clean_output_dir(output, &source)?;
     }
 
-    let stats = if languages.is_empty() {
+    let book_links = collect_book_links(&source, &languages)?;
+
+    let mut stats = if languages.is_empty() {
         // Single language book
         println!("Building single-language book...");
-        build_single_book(&source, output, &config, skip_search_index, None)?
+        build_single_book(
+            &source,
+            output,
+            &config,
+            skip_search_index,
+            None,
+            &book_links,
+        )?
     } else {
         // Multi-language book
         println!(
@@ -106,8 +115,16 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
             println!("  - {} ({})", lang.title, lang.code);
         }
 
-        build_multi_lang_book(&source, output, &config, &languages, skip_search_index)?
+        build_multi_lang_book(
+            &source,
+            output,
+            &config,
+            &languages,
+            skip_search_index,
+            &book_links,
+        )?
     };
+    stats.assets += copy_linked_md_files(&source, output, &languages, &book_links)?;
 
     // Generate Swagger UI if openapi is configured (at root level)
     if let Some(openapi_config) = &config.openapi {
@@ -130,14 +147,100 @@ pub fn build_with_options(source: &Path, output: &Path, skip_search_index: bool)
     Ok(())
 }
 
+/// The pages of the whole site: a page can link to a page of another language
+fn collect_book_links(source: &Path, languages: &[Language]) -> Result<BookLinks> {
+    let mut links = BookLinks::default();
+    if languages.is_empty() {
+        add_book_pages(&mut links, source, None)?;
+    }
+    for lang in languages {
+        add_book_pages(&mut links, &source.join(&lang.code), Some(&lang.code))?;
+    }
+    Ok(links)
+}
+
+fn add_book_pages(links: &mut BookLinks, source: &Path, lang: Option<&str>) -> Result<()> {
+    let site_path = |path: &str| match lang {
+        Some(lang) => format!("{}/{}", lang, path),
+        None => path.to_string(),
+    };
+    fn add_items(links: &mut BookLinks, items: &[SummaryItem], site_path: &dyn Fn(&str) -> String) {
+        for item in items {
+            if let SummaryItem::Link { path, children, .. } = item {
+                if let Some(path) = path.as_deref().filter(|p| !template::is_external_link(p)) {
+                    let file = path.split('#').next().unwrap_or("");
+                    links.add_page(&site_path(file.trim_start_matches('/')));
+                }
+                add_items(links, children, site_path);
+            }
+        }
+    }
+
+    let summary = Summary::parse(source)?;
+    add_items(links, &summary.items, &site_path);
+    if source.join("README.md").exists() {
+        links.add_home(&site_path("README.md"));
+    }
+    Ok(())
+}
+
+/// Copy the `.md` files that the pages link to and that are not pages: HonKit copies them
+/// like any other file, so the links open. Only the linked ones, so that a site does not
+/// publish files nobody meant it to, like the notes for tools in a repository's root. The
+/// files that HonKit does not copy are the ones that describe a book.
+fn copy_linked_md_files(
+    source: &Path,
+    output: &Path,
+    languages: &[Language],
+    links: &BookLinks,
+) -> Result<usize> {
+    let book_files = ["SUMMARY.md", "GLOSSARY.md", "LANGS.md"];
+    let book_roots: Vec<String> = if languages.is_empty() {
+        vec![String::new()]
+    } else {
+        languages.iter().map(|l| format!("{}/", l.code)).collect()
+    };
+    let is_book_file = |file: &str| {
+        file == "LANGS.md"
+            || book_roots.iter().any(|root| {
+                file.strip_prefix(root.as_str())
+                    .is_some_and(|name| book_files.contains(&name))
+            })
+    };
+
+    let mut count = 0;
+    for file in links.linked_files() {
+        if is_book_file(&file) {
+            continue;
+        }
+        let src = source.join(&file);
+        // A link that leads out of the source through a symlink stays a dead link
+        let is_inside = src
+            .canonicalize()
+            .is_ok_and(|real| real.starts_with(source));
+        if !is_inside || !src.is_file() {
+            continue;
+        }
+        let dest = output.join(&file);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&src, &dest)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 fn build_single_book(
     source: &Path,
     output: &Path,
     config: &BookConfig,
     skip_search_index: bool,
     lang_prefix: Option<&str>,
+    book_links: &BookLinks,
 ) -> Result<BuildStats> {
-    let summary = Summary::parse(source)?;
+    let mut summary = Summary::parse(source)?;
+    unlink_missing_pages(&mut summary.items, source);
     let templates = Templates::new(config)?;
     let mut stats = BuildStats::default();
 
@@ -176,6 +279,7 @@ fn build_single_book(
         &summary,
         &glossary,
         lang_prefix,
+        book_links,
     )?;
 
     // Generate index.html from README.md if exists
@@ -193,7 +297,11 @@ fn build_single_book(
                 eprintln!("  Warning: Template error in README.md: {}", e);
                 imported_content.clone()
             });
-        let html_content = render_markdown_with_hardbreaks(&content, config.hardbreaks);
+        let home_path = match lang_prefix {
+            Some(prefix) => format!("{}/README.md", prefix),
+            None => "README.md".to_string(),
+        };
+        let html_content = render_book_home(&content, &home_path, config.hardbreaks, book_links);
         // Apply glossary terms
         let html_content = apply_glossary(&html_content, &glossary);
         // Process sitemap directives
@@ -274,6 +382,7 @@ fn build_multi_lang_book(
     config: &BookConfig,
     languages: &[Language],
     skip_search_index: bool,
+    book_links: &BookLinks,
 ) -> Result<BuildStats> {
     let mut stats = BuildStats::default();
 
@@ -303,6 +412,7 @@ fn build_multi_lang_book(
             &lang_config,
             skip_search_index,
             Some(&lang.code),
+            book_links,
         )?;
         stats.pages += lang_stats.pages;
         stats.assets += lang_stats.assets;
@@ -327,6 +437,7 @@ fn build_chapters(
     summary: &Summary,
     glossary: &Glossary,
     lang_prefix: Option<&str>,
+    book_links: &BookLinks,
 ) -> Result<usize> {
     let mut built_files: std::collections::HashSet<String> = std::collections::HashSet::new();
     build_chapters_inner(
@@ -339,6 +450,7 @@ fn build_chapters(
         glossary,
         &mut built_files,
         lang_prefix,
+        book_links,
     )
 }
 
@@ -353,6 +465,7 @@ fn build_chapters_inner(
     glossary: &Glossary,
     built_files: &mut std::collections::HashSet<String>,
     lang_prefix: Option<&str>,
+    book_links: &BookLinks,
 ) -> Result<usize> {
     let mut count = 0;
 
@@ -386,6 +499,7 @@ fn build_chapters_inner(
                             glossary,
                             built_files,
                             lang_prefix,
+                            book_links,
                         )?;
                     }
                     continue;
@@ -432,11 +546,8 @@ fn build_chapters_inner(
                                     eprintln!("  Warning: Template error in {}: {}", base_path, e);
                                     imported_content.clone()
                                 });
-                        let html = render_markdown_with_path(
-                            &content,
-                            Some(&full_path),
-                            config.hardbreaks,
-                        );
+                        let html =
+                            render_book_page(&content, &full_path, config.hardbreaks, book_links);
                         let toc = extract_headings(&content);
                         (html, toc)
                     };
@@ -487,7 +598,7 @@ fn build_chapters_inner(
                     }
                     fs::write(&dest_file, page_html)?;
                     count += 1;
-                } else {
+                } else if !template::is_external_link(md_path) {
                     println!("  Warning: {} not found", base_path);
                 }
             }
@@ -504,12 +615,31 @@ fn build_chapters_inner(
                     glossary,
                     built_files,
                     lang_prefix,
+                    book_links,
                 )?;
             }
         }
     }
 
     Ok(count)
+}
+
+/// Take the links off the summary items whose page has no source file, the way HonKit does:
+/// the title stays in the sidebar as text, and no link leads to a page that was not built.
+fn unlink_missing_pages(items: &mut [SummaryItem], source: &Path) {
+    for item in items {
+        if let SummaryItem::Link { path, children, .. } = item {
+            let is_missing = path.as_deref().is_some_and(|path| {
+                let file = path.split('#').next().unwrap_or(path);
+                template::is_page_source(path)
+                    && !source.join(file.trim_start_matches('/')).exists()
+            });
+            if is_missing {
+                *path = None;
+            }
+            unlink_missing_pages(children, source);
+        }
+    }
 }
 
 /// Remove previous build output so deleted/renamed pages don't linger.

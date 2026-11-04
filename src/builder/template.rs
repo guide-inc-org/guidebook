@@ -1,3 +1,4 @@
+use super::renderer::has_url_scheme;
 use crate::builder::TocItem;
 use crate::parser::{BookConfig, FrontMatter, Summary, SummaryItem};
 use anyhow::Result;
@@ -43,12 +44,14 @@ impl Templates {
         context.insert("collapsible", &collapsible);
 
         // Generate sidebar HTML - links need root_path prefix
+        // The root of the site is above the directory of the language
+        let site_root = lang_prefix.map(|_| format!("../{root_path}"));
         let sidebar = generate_sidebar(
             &summary.items,
             current_path,
             root_path,
             collapsible,
-            lang_prefix.is_some(),
+            site_root.as_deref(),
         );
         context.insert("sidebar", &sidebar);
 
@@ -147,6 +150,20 @@ pub(crate) fn source_path_to_html(path: &str) -> String {
     path.to_string()
 }
 
+/// Whether a path in a summary leads to another site
+pub(crate) fn is_external_link(path: &str) -> bool {
+    has_url_scheme(path) || path.starts_with("//")
+}
+
+/// Whether a path in a summary leads to a source file that is built into a page
+pub(crate) fn is_page_source(path: &str) -> bool {
+    let file = path.split('#').next().unwrap_or(path);
+    !is_external_link(path)
+        && [".md", ".adoc", ".asciidoc"]
+            .iter()
+            .any(|extension| file.ends_with(extension))
+}
+
 /// Flatten summary items into a list of (html_path, title)
 fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
     let mut pages = Vec::new();
@@ -160,8 +177,12 @@ fn flatten_pages(items: &[SummaryItem]) -> Vec<(String, String)> {
         {
             if let Some(md_path) = path {
                 // Remove leading slash and convert extension to .html
-                let html_path = source_path_to_html(md_path.trim_start_matches('/'));
-                pages.push((html_path, title.clone()));
+                // Not to another site or to a directory that is not a page of this language
+                let is_page_of_book = is_page_source(md_path) || !md_path.starts_with('/');
+                if !is_external_link(md_path) && is_page_of_book {
+                    let html_path = source_path_to_html(md_path.trim_start_matches('/'));
+                    pages.push((html_path, title.clone()));
+                }
             }
             // Recursively add children
             pages.extend(flatten_pages(children));
@@ -176,7 +197,7 @@ fn generate_sidebar(
     current_path: Option<&str>,
     prefix: &str,
     collapsible: bool,
-    is_multi_lang: bool,
+    site_root: Option<&str>,
 ) -> String {
     let mut html = String::new();
 
@@ -191,10 +212,16 @@ fn generate_sidebar(
                 let is_book_root_relative =
                     path.as_ref().map(|p| p.starts_with('/')).unwrap_or(false);
 
+                let is_external = path.as_deref().is_some_and(is_external_link);
+
                 // Remove leading slash and convert extension to .html
-                let html_path = path
-                    .as_ref()
-                    .map(|p| source_path_to_html(p.trim_start_matches('/')));
+                let html_path = path.as_ref().map(|p| {
+                    if is_external {
+                        p.clone()
+                    } else {
+                        source_path_to_html(p.trim_start_matches('/'))
+                    }
+                });
                 let is_active = current_path
                     .map(|cp| html_path.as_ref().map(|hp| cp == hp).unwrap_or(false))
                     .unwrap_or(false);
@@ -222,19 +249,27 @@ fn generate_sidebar(
                 ));
 
                 if let Some(ref hp) = html_path {
-                    // For multi-language books, root-relative paths need an extra ../ to get to book root
-                    let href_prefix = if is_book_root_relative && is_multi_lang {
-                        format!("../{}", prefix)
+                    // For multi-language books, root-relative paths go to the root of the site.
+                    // Not the ones to a page: a page is always built in the language's directory.
+                    let is_page = path.as_deref().is_some_and(is_page_source);
+                    let href_prefix = match site_root {
+                        _ if is_external => "",
+                        Some(site_root) if is_book_root_relative && !is_page => site_root,
+                        _ => prefix,
+                    };
+                    let target = if is_external {
+                        r#" target="_blank""#
                     } else {
-                        prefix.to_string()
+                        ""
                     };
                     // Escape the href value too — the path comes from
                     // SUMMARY.md and a raw quote would break out of the
                     // attribute (title on the same line was already escaped)
                     html.push_str(&format!(
-                        r#"<a href="{}{}">{}</a>"#,
+                        r#"<a href="{}{}"{}>{}</a>"#,
                         href_prefix,
                         html_escape(hp),
+                        target,
                         html_escape(title)
                     ));
                 } else {
@@ -251,7 +286,7 @@ fn generate_sidebar(
                         current_path,
                         prefix,
                         collapsible,
-                        is_multi_lang,
+                        site_root,
                     ));
                     html.push_str("</ul>");
                 }
