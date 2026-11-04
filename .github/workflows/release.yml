@@ -46,7 +46,7 @@ jobs:
           Compress-Archive -Path target/${{ matrix.target }}/release/guidebook.exe -DestinationPath ${{ matrix.artifact }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
