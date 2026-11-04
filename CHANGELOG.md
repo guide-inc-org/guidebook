@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- HonKit compatibility, links: a link to a `.md` file that is not a page stays a link to that file, and the file is copied (`.html` was a dead link). Only the linked files are copied, so that notes in a repository do not get published. A link to a README that is not in the summary goes to its `index.html`.
+- Links: a `.md` link to another site keeps its extension.
+- HonKit compatibility, lists: indentation is read the way HonKit reads it. An item ends at a marker with the same indentation, and a marker with another indentation goes into the deepest open item. Lines after a blank line stay in the deepest item they reach. A heading or a code fence right after the text of an item stays in the item. `- 1. text` opens two items.
+- HonKit compatibility, inline tags: a line that holds nothing but an inline tag (`<span>`, `<br>`, `<mark>`, ...) is a part of a paragraph, so the Markdown around it is read. What a `<code>` element holds stays as it is written.
+- HonKit compatibility, headings: `### Title {name}` keeps its braces, only `{#id}` is an attribute. `###-text` is a heading, a mask like `####-####` is not.
+- HonKit compatibility, reference links: `[a][b](c d)` with a defined label `b` is a link followed by text.
+- Multi-language books: a `/page.md` in the summary of a language leads to the page in the language's directory, like in HonKit.
+- Sidebar: an item whose file does not exist is text, like in HonKit, not a link to a page that was not built.
+- Sidebar: an item that links to another site opens that site in a new tab, like in HonKit (the link was prefixed with the path to the root of the book).
 - HonKit compatibility, footnotes: the lines after a footnote's first line are rendered with the rest of the document, so reference-style images and links work there (`![][label]` no longer turned into `!<a href=""></a>`, a definition right after a footnote is no longer swallowed, a fenced block may contain blank lines). The first line's inline formatting (`` `code` ``, `**bold**`, links) is rendered instead of shown as is
 - Footnotes: a URL right before a footnote reference no longer swallows it (broken `<a>`). A line that looks like a definition inside an HTML comment or `<pre>` is left as written (it used to close the comment early and expose the rest of the page)
 - HonKit compatibility, strikethrough: a single `~` stays literal (`0 ~100 and 0~ 100`), only `~~text~~` strikes through, in the TOC too
