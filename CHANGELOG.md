@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - HonKit compatibility, tables: cells beyond the header are kept by widening the header and the separator to the widest row with content (they used to be dropped)
 - HonKit compatibility, lists: an HTML comment between two list items no longer ends the list (the deeper item after it became a code block)
 - HonKit compatibility, links: a link destination with spaces is a link (`[text](a b.md)`), with the spaces and angle brackets percent-encoded (it stayed as text)
+- HonKit compatibility, images: a title after the path is a title (`![alt](a.png "title")` was a broken image), for links with spaces in the path too. An image with a space in its path is no longer rewritten inside code, and an image without its closing parenthesis no longer swallows the text up to the next `)`. In a raw HTML block, an image with spaces in its path or with a title works, and text that only starts like an image stays text
 - Favicon: the build now actually emits `gitbook/images/favicon.ico` / apple-touch-icon (previously only linked, always 404) and content pages link them with the depth-aware root path
 - Front matter: a `----` line no longer closes the front matter early (closing delimiter must be exactly `---`); UTF-8 BOM-prefixed files keep their front matter
 - Glossary: a `>` inside a quoted attribute value no longer breaks the tag tracker (spans were injected into attributes); `class="no-glossary"` on void/self-closing elements (`<img/>` etc.) no longer disables the glossary for the rest of the page

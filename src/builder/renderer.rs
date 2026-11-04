@@ -1040,17 +1040,19 @@ fn fix_link_destinations_with_spaces(content: &str) -> String {
                 break;
             };
             let destination = &after_open[..end];
-            // "<a b>" is already fine, and a quote or a parenthesis starts a title
-            let is_bare = !destination.starts_with('<') && !destination.contains(['"', '\'', '(']);
+            let (path, title) = split_link_title(destination);
+            let path = path.trim();
+            // "<a b>" is already fine, and a parenthesis may start a title
+            let is_bare = !path.starts_with('<') && !path.contains('(');
 
             result.push_str(&rest[..start + 2]);
-            if is_bare && destination.trim().contains(' ') {
-                let encoded = destination
-                    .trim()
+            if is_bare && path.contains(' ') {
+                let encoded = path
                     .replace(' ', "%20")
                     .replace('<', "%3C")
                     .replace('>', "%3E");
                 result.push_str(&encoded);
+                result.push_str(title);
             } else {
                 result.push_str(destination);
             }
@@ -1061,6 +1063,20 @@ fn fix_link_destinations_with_spaces(content: &str) -> String {
         result.push_str(rest);
         result
     })
+}
+
+/// Split `path "title"` into the path and the title (with the space before it). HonKit
+/// reads either kind of quote as a title.
+fn split_link_title(destination: &str) -> (&str, &str) {
+    let end = destination.trim_end();
+    let Some(quote) = end.chars().last().filter(|c| matches!(c, '"' | '\'')) else {
+        return (destination, "");
+    };
+    let body = &end[..end.len() - 1];
+    match body.find(&format!(" {quote}")) {
+        Some(i) => destination.split_at(i),
+        None => (destination, ""),
+    }
 }
 
 /// Keep only the last definition of each reference label: HonKit lets the last one
@@ -1128,6 +1144,10 @@ fn reference_definition_label(line: &str) -> Option<String> {
 /// Fix image paths that contain spaces by wrapping them in angle brackets
 /// Converts ![alt](path with space.png) to ![alt](<path with space.png>)
 fn fix_image_paths_with_spaces(content: &str) -> String {
+    map_outside_code(content, fix_image_paths_in_text)
+}
+
+fn fix_image_paths_in_text(content: &str) -> String {
     let mut result = String::new();
     let mut chars = content.chars().peekable();
 
@@ -1160,6 +1180,7 @@ fn fix_image_paths_with_spaces(content: &str) -> String {
                     // Read URL until ')'
                     let mut url = String::new();
                     let mut paren_depth = 1;
+                    let mut closed = false;
                     while let Some(&ch) = chars.peek() {
                         if ch == '(' {
                             paren_depth += 1;
@@ -1168,6 +1189,7 @@ fn fix_image_paths_with_spaces(content: &str) -> String {
                             paren_depth -= 1;
                             if paren_depth == 0 {
                                 chars.next(); // consume ')'
+                                closed = true;
                                 break;
                             }
                             url.push(chars.next().unwrap());
@@ -1176,15 +1198,20 @@ fn fix_image_paths_with_spaces(content: &str) -> String {
                         }
                     }
 
-                    // Check if URL contains spaces and doesn't already use angle brackets
-                    if url.contains(' ') && !url.starts_with('<') {
+                    // Check if the path contains spaces and doesn't already use angle brackets
+                    let (path, title) = split_link_title(&url);
+                    let path = path.trim();
+                    if closed && path.contains(' ') && !path.starts_with('<') {
                         img_str.push('<');
-                        img_str.push_str(&url);
+                        img_str.push_str(path);
                         img_str.push('>');
+                        img_str.push_str(title);
                     } else {
                         img_str.push_str(&url);
                     }
-                    img_str.push(')');
+                    if closed {
+                        img_str.push(')');
+                    }
                 }
 
                 result.push_str(&img_str);
@@ -1489,7 +1516,7 @@ fn convert_remaining_markdown_images(html: &str) -> String {
     let mut chars = html.char_indices().peekable();
     let mut in_code = false; // Track if we're inside <code> or <pre>
 
-    while let Some((_, c)) = chars.next() {
+    while let Some((i, c)) = chars.next() {
         // Check if we're inside an HTML tag
         if c == '<' {
             result.push(c);
@@ -1520,69 +1547,78 @@ fn convert_remaining_markdown_images(html: &str) -> String {
             continue;
         }
 
-        if c == '!' && chars.peek().map(|(_, ch)| *ch) == Some('[') {
-            chars.next(); // consume '['
-
-            // Collect alt text until ']'
-            let mut alt = String::new();
-            let mut bracket_depth = 1;
-            for (_, ch) in chars.by_ref() {
-                if ch == '[' {
-                    bracket_depth += 1;
-                    alt.push(ch);
-                } else if ch == ']' {
-                    bracket_depth -= 1;
-                    if bracket_depth == 0 {
-                        break;
-                    }
-                    alt.push(ch);
-                } else {
-                    alt.push(ch);
-                }
-            }
-
-            // Check for '(' after ']'
-            if chars.peek().map(|(_, ch)| *ch) == Some('(') {
-                chars.next(); // consume '('
-
-                // Collect URL until ')'
-                let mut url = String::new();
-                let mut paren_depth = 1;
-                for (_, ch) in chars.by_ref() {
-                    if ch == '(' {
-                        paren_depth += 1;
-                        url.push(ch);
-                    } else if ch == ')' {
-                        paren_depth -= 1;
-                        if paren_depth == 0 {
-                            break;
-                        }
-                        url.push(ch);
-                    } else {
-                        url.push(ch);
-                    }
-                }
-
+        if c == '!' {
+            if let Some((alt, path, title, len)) = parse_remaining_image(&html[i..]) {
                 // Output as <img> tag (escape quotes so alt/url text cannot
                 // break out of the attribute value)
+                let title = if title.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#" title="{}""#, html_escape(title))
+                };
                 result.push_str(&format!(
-                    r#"<img src="{}" alt="{}">"#,
-                    html_escape(&url),
-                    html_escape(&alt)
+                    r#"<img src="{}" alt="{}"{}>"#,
+                    html_escape(path).replace(' ', "%20"),
+                    html_escape(alt),
+                    title
                 ));
-            } else {
-                // Not an image, output as-is
-                result.push('!');
-                result.push('[');
-                result.push_str(&alt);
-                result.push(']');
+                while chars.peek().is_some_and(|(next, _)| *next < i + len) {
+                    chars.next();
+                }
+                continue;
             }
-        } else {
-            result.push(c);
         }
+
+        result.push(c);
     }
 
     result
+}
+
+/// Read an image the Markdown parser left as text, at the start of `rest`. It has to close
+/// on its line and before any tag, otherwise it is just text that looks like one. Returns
+/// the alt text, the path, the title, and the length of the source.
+fn parse_remaining_image(rest: &str) -> Option<(&str, &str, &str, usize)> {
+    let inner = rest.strip_prefix("![")?;
+    let alt_len = find_closing_bracket(inner, '[', ']')?;
+    let (alt, after_alt) = inner.split_at(alt_len);
+    let destination = after_alt.strip_prefix("](")?;
+    let destination_len = find_closing_bracket(destination, '(', ')')?;
+
+    let (path, title) = split_link_title(&destination[..destination_len]);
+    let path = path.trim();
+    let path = path
+        .strip_prefix('<')
+        .and_then(|path| path.strip_suffix('>'))
+        .unwrap_or(path);
+    if alt.contains('<') || path.contains('<') {
+        return None;
+    }
+
+    // The title still has its quotes, which are one byte each
+    let title = title.trim();
+    let title = title.get(1..title.len().saturating_sub(1)).unwrap_or("");
+
+    let len = "![".len() + alt_len + "](".len() + destination_len + ")".len();
+    Some((alt, path, title, len))
+}
+
+/// The position of the bracket closing a run of text, on the same line.
+fn find_closing_bracket(text: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 1;
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            return None;
+        } else if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 /// Convert internal links to proper relative paths from current file
@@ -2770,4 +2806,87 @@ fn test_link_destination_with_spaces_in_code_is_untouched() {
 
     let html = render_markdown("```\n[リンク](a b)\n```\n");
     assert!(html.contains("[リンク](a b)\n</code></pre>"), "{}", html);
+}
+
+#[test]
+fn test_link_destination_with_spaces_and_title() {
+    let html = render_markdown("[リンク](a b.md \"題 名\")");
+    assert!(
+        html.contains("<a href=\"a%20b.html\" title=\"題 名\">リンク</a>"),
+        "{}",
+        html
+    );
+}
+
+#[test]
+fn test_image_with_title() {
+    let html = render_markdown("![代替](a.png \"題 名\")");
+    assert!(
+        html.contains("<img src=\"a.png\" alt=\"代替\" title=\"題 名\""),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("![代替](a b.png '題 名')");
+    assert!(
+        html.contains("<img src=\"a%20b.png\" alt=\"代替\" title=\"題 名\""),
+        "{}",
+        html
+    );
+}
+
+#[test]
+fn test_image_path_with_spaces_in_code_is_untouched() {
+    let html = render_markdown("`![代替](a b.png)`");
+    assert!(html.contains("<code>![代替](a b.png)</code>"), "{}", html);
+
+    let html = render_markdown("```\n![代替](a b.png)\n```\n");
+    assert!(html.contains("![代替](a b.png)\n</code></pre>"), "{}", html);
+}
+
+#[test]
+fn test_image_in_raw_html_with_spaces_or_title() {
+    let html = render_markdown("<div>\n![代替](a b.png)\n</div>");
+    assert!(
+        html.contains("<img src=\"a%20b.png\" alt=\"代替\">"),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("<div>\n![代替](a.png \"題 名\")\n</div>");
+    assert!(
+        html.contains("<img src=\"a.png\" alt=\"代替\" title=\"題 名\">"),
+        "{}",
+        html
+    );
+}
+
+#[test]
+fn test_image_syntax_in_raw_html_that_does_not_close_stays_text() {
+    let html = render_markdown("<div>\n![代替\n</div>");
+    assert_eq!(html.trim(), "<div>\n![代替\n</div>");
+
+    let html = render_markdown("<div>![代替](a</div>\n<div>(b)</div>");
+    assert!(!html.contains("<img"), "{}", html);
+    assert!(html.contains("<div>(b)</div>"), "{}", html);
+
+    let html = render_markdown("<div>![代替](a</div><div>b)</div>");
+    assert!(!html.contains("<img"), "{}", html);
+
+    let html = render_markdown("<div>![代替</div><div>](a.png)</div>");
+    assert!(!html.contains("<img"), "{}", html);
+
+    let html = render_markdown("<div>\n![代替](a\nb)\n</div>");
+    assert!(!html.contains("<img"), "{}", html);
+}
+
+#[test]
+fn test_unclosed_image_stays_text() {
+    let html = render_markdown("![代替](a.png\n\n次の段落 (かっこ)");
+    assert!(!html.contains("<img"), "{}", html);
+    assert!(html.contains("<p>![代替](a.png</p>"), "{}", html);
+    assert!(html.contains("<p>次の段落 (かっこ)</p>"), "{}", html);
+
+    let html = render_markdown("![代替](a b.png");
+    assert!(html.contains("<p>![代替](a b.png</p>"), "{}", html);
 }
