@@ -1,4 +1,5 @@
 use pulldown_cmark::{html, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Table of Contents item
@@ -100,6 +101,12 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     // Strip all UTF-8 BOM characters (fixes reference link parsing issues)
     // BOM can appear at start of file or in concatenated content from @import
     let content = content.replace('\u{FEFF}', "");
+
+    // Convert footnote definitions to placeholders (preserve original position). First,
+    // because the fixes below ask the parser how it reads each line, and the lines after a
+    // definition's first line only read as they will once they are dedented.
+    let content = convert_footnote_definitions_inline(&content);
+
     // Preprocess: fix image paths with spaces
     let content = fix_image_paths_with_spaces(&content);
     // Preprocess: read the source the way HonKit does
@@ -108,23 +115,15 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     let content = keep_last_reference_definitions(&content);
     // Preprocess: fix malformed table rows
     let content = fix_table_separator_columns(&content);
-
-    // Convert footnote definitions to placeholders (preserve original position)
-    let content = convert_footnote_definitions_inline(&content);
+    // Preprocess: end tables where HonKit does
+    let content = end_tables_at_lines_without_pipes(&content);
 
     // Convert footnote references [^n] to placeholders BEFORE markdown parsing
     // This prevents [A][^1] from being interpreted as a markdown link reference
     let content = convert_footnote_references_to_placeholder(&content);
 
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    // Don't use pulldown-cmark's footnote processing - we handle it ourselves
-    // options.insert(Options::ENABLE_FOOTNOTES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-    options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
-
-    let parser = parse_with_honkit_inline_rules(&content, options);
+    let parser = parse_with_honkit_inline_rules(&content, render_options());
+    let parser = apply_honkit_list_looseness(parser, &honkit_loose_items(&content));
 
     // Process events to handle mermaid code blocks and heading IDs
     let mut in_mermaid = false;
@@ -237,11 +236,23 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     html_output
 }
 
+fn render_options() -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    // Don't use pulldown-cmark's footnote processing - we handle it ourselves
+    // options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+    options
+}
+
 /// Rewrite the source where HonKit reads it differently from CommonMark, in the ways that
 /// can change headings. Shared by rendering and TOC extraction so that they agree.
 fn apply_honkit_source_rules(content: &str) -> String {
-    let content = fix_heading_marker_spaces(content);
-    let content = remove_comments_between_list_items(&content);
+    // First: a comment that goes changes how the lines after it are read
+    let content = remove_comments_between_list_items(content);
+    let content = fix_heading_marker_spaces(&content);
     fix_link_destinations_with_spaces(&content)
 }
 
@@ -293,6 +304,135 @@ fn parse_with_honkit_inline_rules(content: &str, options: Options) -> Vec<Event<
     text_run.flush_into(&mut events, content);
 
     events
+}
+
+/// For every list item of the document, in order, whether HonKit puts its text in a
+/// paragraph. HonKit decides item by item, CommonMark for the whole list: an item is loose
+/// when it has a blank line inside (one in a nested list counts), ends with one, or comes
+/// after an item that ended with one. The last item of a list is not loose for its end.
+///
+/// None leaves it to the parser: in a block quote, the blank lines have markers on them.
+fn honkit_loose_items(content: &str) -> Vec<Option<bool>> {
+    let mut loose_items = Vec::new();
+    // For each open list: its items so far, as an index into loose_items and a source range
+    let mut lists: Vec<Vec<(usize, std::ops::Range<usize>)>> = Vec::new();
+    let mut quote_depth = 0;
+
+    for (event, range) in Parser::new_ext(content, render_options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::BlockQuote) => quote_depth += 1,
+            Event::End(TagEnd::BlockQuote) => quote_depth -= 1,
+            Event::Start(Tag::List(_)) => lists.push(Vec::new()),
+            Event::Start(Tag::Item) => {
+                if let Some(items) = lists.last_mut() {
+                    items.push((loose_items.len(), range));
+                }
+                loose_items.push(None);
+            }
+            Event::End(TagEnd::List(_)) => {
+                let items = lists.pop().unwrap_or_default();
+                if quote_depth > 0 {
+                    continue;
+                }
+                let mut after_blank_line = false;
+                for (i, (index, range)) in items.iter().enumerate() {
+                    let next_item = items.get(i + 1);
+                    let end = next_item.map_or(range.end, |(_, next)| next.start);
+                    let item = blank_out_whitespace_lines(&content[range.start..end]);
+
+                    let mut loose = after_blank_line
+                        || item
+                            .match_indices("\n\n")
+                            .any(|(at, _)| !item[at + 2..].trim().is_empty());
+                    if next_item.is_some() {
+                        after_blank_line = item.ends_with("\n\n");
+                        loose |= after_blank_line;
+                    }
+                    loose_items[*index] = Some(loose);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    loose_items
+}
+
+/// Empty the lines that hold nothing but spaces, tabs and no-break spaces: HonKit reads
+/// those as blank lines before it looks at anything else
+fn blank_out_whitespace_lines(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            if line.chars().all(|c| matches!(c, ' ' | '\t' | '\u{a0}')) {
+                ""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Put the text of the list items in paragraphs, or take it out of them, the way HonKit
+/// does. See honkit_loose_items.
+fn apply_honkit_list_looseness<'a>(
+    events: Vec<Event<'a>>,
+    loose_items: &[Option<bool>],
+) -> Vec<Event<'a>> {
+    #[derive(PartialEq)]
+    enum Open {
+        Item(Option<bool>),
+        RemovedParagraph,
+        Other,
+    }
+
+    let mut result = Vec::with_capacity(events.len());
+    let mut open: Vec<Open> = Vec::new();
+    let mut loose_items = loose_items.iter().copied();
+    let mut in_added_paragraph = false;
+
+    for event in events {
+        if open.last() == Some(&Open::Item(Some(true))) {
+            let inline = is_inline_event(&event);
+            if inline != in_added_paragraph {
+                result.push(if inline {
+                    Event::Start(Tag::Paragraph)
+                } else {
+                    Event::End(TagEnd::Paragraph)
+                });
+                in_added_paragraph = inline;
+            }
+        }
+        match &event {
+            Event::Start(Tag::Item) => open.push(Open::Item(loose_items.next().flatten())),
+            Event::Start(Tag::Paragraph) if open.last() == Some(&Open::Item(Some(false))) => {
+                open.push(Open::RemovedParagraph);
+                continue;
+            }
+            Event::Start(_) => open.push(Open::Other),
+            Event::End(_) => {
+                let closed = open.pop();
+                if closed == Some(Open::RemovedParagraph) {
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        result.push(event);
+    }
+
+    result
+}
+
+/// Whether the event can be a part of a paragraph
+fn is_inline_event(event: &Event) -> bool {
+    match event {
+        Event::Start(
+            Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link { .. } | Tag::Image { .. },
+        ) => true,
+        Event::Start(_) | Event::End(_) | Event::Rule => false,
+        _ => true,
+    }
 }
 
 /// Adjacent text events on their way to becoming one
@@ -393,8 +533,49 @@ fn find_closing_strong(text: &str, inner: usize) -> Option<usize> {
     None
 }
 
-/// Tells which lines of a document belong to a fenced code block, for the fixes that
-/// work on the text before it is parsed
+/// How the parser reads a line of the source
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineKind {
+    Markdown,
+    Code,
+    /// The first line of a raw HTML block
+    RawHtmlStart,
+    /// A later line of a raw HTML block
+    RawHtml,
+}
+
+/// How the parser reads each line of a document. The fixes that work on the text before it
+/// is parsed ask this so that they only change what will be read as Markdown: nothing in a
+/// code block or a raw HTML block (<style>, <script>, <pre>, a comment, ...) is.
+fn line_kinds(content: &str) -> Vec<LineKind> {
+    let mut line_starts = Vec::new();
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        line_starts.push(offset);
+        offset += line.len();
+    }
+
+    let mut kinds = vec![LineKind::Markdown; line_starts.len()];
+    for (event, range) in Parser::new_ext(content, render_options()).into_offset_iter() {
+        let kind = match event {
+            Event::Start(Tag::CodeBlock(_)) => LineKind::Code,
+            Event::Start(Tag::HtmlBlock) => LineKind::RawHtml,
+            _ => continue,
+        };
+        let first = line_starts.partition_point(|&start| start <= range.start) - 1;
+        let end = line_starts.partition_point(|&start| start < range.end);
+        kinds[first..end].fill(kind);
+        if kind == LineKind::RawHtml {
+            kinds[first] = LineKind::RawHtmlStart;
+        }
+    }
+
+    kinds
+}
+
+/// Tells which lines of a footnote's continuation belong to a fenced code block. The parser
+/// cannot tell yet: these lines are still indented, and the fence only counts once they
+/// are dedented.
 #[derive(Default)]
 struct FenceTracker {
     /// (fence_char, fence_length) while inside a fenced code block
@@ -506,32 +687,35 @@ fn html_escape(s: &str) -> String {
 fn convert_footnote_definitions_inline(content: &str) -> String {
     let mut result_lines = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
-    let mut fence = FenceTracker::default();
+    let kinds = line_kinds(content);
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
+        let definition = match kinds[i] {
+            LineKind::Markdown => parse_footnote_def_start(line),
+            _ => None,
+        };
         i += 1;
 
-        if fence.is_code_line(line) {
-            result_lines.push(line.to_string());
-            continue;
-        }
-
         // Check if this line starts a footnote definition [^n]:
-        let Some((number, first_line_content)) = parse_footnote_def_start(line) else {
+        let Some((number, first_line_content)) = definition else {
             result_lines.push(line.to_string());
             continue;
         };
 
         // Collect continuation lines (indented or list items until next footnote/heading/blank)
         let mut continuation_lines: Vec<&str> = Vec::new();
+        let mut fence = FenceTracker::default();
         while i < lines.len() {
             let next_line = lines[i];
             let trimmed = next_line.trim_start();
+            let is_raw_html = matches!(kinds[i], LineKind::RawHtmlStart | LineKind::RawHtml);
 
-            // Stop if: empty line, new footnote, heading (a fenced code block runs to its fence)
+            // Stop if: empty line, new footnote, heading (a fenced code block runs to its
+            // fence, and a raw HTML block to its end)
             if !fence.is_open()
+                && !is_raw_html
                 && (trimmed.is_empty()
                     || (trimmed.starts_with("[^") && trimmed.contains("]:"))
                     || trimmed.starts_with('#'))
@@ -539,7 +723,9 @@ fn convert_footnote_definitions_inline(content: &str) -> String {
                 break;
             }
 
-            fence.is_code_line(next_line);
+            if !is_raw_html {
+                fence.is_code_line(next_line);
+            }
             continuation_lines.push(next_line);
             i += 1;
         }
@@ -584,19 +770,48 @@ fn dedent_lines(lines: &[&str]) -> Vec<String> {
 /// Convert footnote references [^n] to placeholder (before parsing)
 /// Placeholder format: %%FNREF_n%% - will be converted to HTML after markdown parsing
 ///
-/// Skips code so that literal text like the regex character class `[^abc]` is not
-/// turned into a footnote reference.
+/// Skips code and raw HTML so that literal text like the regex character class `[^abc]`
+/// is not turned into a footnote reference.
 fn convert_footnote_references_to_placeholder(content: &str) -> String {
-    map_outside_code(content, convert_footnote_refs_in_text)
+    let defined = footnote_definition_labels(content);
+    map_markdown_text(content, |text| {
+        convert_footnote_refs_in_text(text, &defined)
+    })
 }
 
-/// Apply a fix to the text of a document outside fenced code blocks and inline code spans
-fn map_outside_code(content: &str, fix: impl Fn(&str) -> String) -> String {
-    let mut result = String::new();
-    let mut fence = FenceTracker::default();
+/// The labels of the footnote definitions, which are placeholders by now
+fn footnote_definition_labels(content: &str) -> HashSet<&str> {
+    let prefix = "%%FNDEF_OPEN_";
+    content
+        .match_indices(prefix)
+        .filter_map(|(start, _)| {
+            let rest = &content[start + prefix.len()..];
+            rest.find("%%").map(|end| &rest[..end])
+        })
+        .collect()
+}
 
-    for line in content.lines() {
-        if fence.is_code_line(line) {
+/// Whether [^label] is a footnote reference. A label of letters and digits always is. One
+/// with symbols, like `3-1`, is only when the document defines it: `[^a-z]` in a sentence
+/// is more likely a character class.
+fn is_footnote_reference(label: &str, defined: &HashSet<&str>) -> bool {
+    if label.is_empty() {
+        return false;
+    }
+    label.chars().all(char::is_alphanumeric)
+        || (label
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            && defined.contains(label))
+}
+
+/// Apply a fix to the text of a document that the parser reads as Markdown: outside code
+/// blocks, raw HTML blocks and inline code spans
+fn map_markdown_text(content: &str, fix: impl Fn(&str) -> String) -> String {
+    let mut result = String::new();
+
+    for (line, kind) in content.lines().zip(line_kinds(content)) {
+        if kind != LineKind::Markdown {
             result.push_str(line);
         } else {
             let mut rest = line;
@@ -649,7 +864,7 @@ fn find_inline_code_span(s: &str) -> Option<(usize, usize)> {
 }
 
 /// Convert footnote references [^n] to placeholders in plain (non-code) text
-fn convert_footnote_refs_in_text(content: &str) -> String {
+fn convert_footnote_refs_in_text(content: &str, defined: &HashSet<&str>) -> String {
     let mut result = String::new();
     let mut chars = content.char_indices().peekable();
 
@@ -661,10 +876,7 @@ fn convert_footnote_refs_in_text(content: &str) -> String {
                 let number = &rest[..end];
                 // Make sure it's a reference (not a definition - no : after ])
                 let after = &rest[end + 1..];
-                if !after.starts_with(':')
-                    && !number.is_empty()
-                    && number.chars().all(|c| c.is_alphanumeric())
-                {
+                if !after.starts_with(':') && is_footnote_reference(number, defined) {
                     // This is a reference, convert to placeholder
                     result.push_str(&format!("%%FNREF_{}%%", number));
                     // Skip past the reference: ^number]
@@ -695,7 +907,7 @@ fn convert_footnote_placeholders_to_html(html: &str) -> String {
             number, number
         )
     });
-    // Nothing is parsed inside a raw HTML block (<pre>, a comment): give the source back
+    // A definition that did not end up in a paragraph of its own: give the source back
     let html = replace_delimited(&html, "%%FNDEF_OPEN_", "%%", |number| {
         format!("[^{}]: ", number)
     });
@@ -762,21 +974,16 @@ fn parse_footnote_def_start(line: &str) -> Option<(&str, &str)> {
 ///   header; HonKit keeps them)
 fn fix_table_separator_columns(content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
+    let kinds = line_kinds(content);
     let mut result = Vec::new();
-    let mut fence = FenceTracker::default();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
 
-        if fence.is_code_line(line) {
-            result.push(line.to_string());
-            i += 1;
-            continue;
-        }
-
         // A table starts at a row (starts with |) followed by a separator row
-        if line.trim().starts_with('|')
+        if kinds[i] == LineKind::Markdown
+            && line.trim().starts_with('|')
             && lines.get(i + 1).is_some_and(|l| is_table_separator_row(l))
         {
             let separator = lines[i + 1];
@@ -823,6 +1030,68 @@ fn fix_table_separator_columns(content: &str) -> String {
     }
 
     result.join("\n")
+}
+
+/// End a table at the first line HonKit does not read as a row, so that a note right under
+/// a table stays a note. CommonMark's extension runs a table up to the blank line and makes
+/// a row of any line on the way. HonKit wants a pipe: at the start of the line in a table
+/// with outer pipes, anywhere in one without.
+///
+/// A line with rows after it stays in the table: HonKit would show those rows as text.
+///
+/// Only at the top level: a blank line would make a list item loose, and HonKit has no
+/// tables in lists to follow.
+fn end_tables_at_lines_without_pipes(content: &str) -> String {
+    let mut table_ends = Vec::new();
+    let mut depth = 0;
+
+    for (event, range) in Parser::new_ext(content, render_options()).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 && matches!(tag, Tag::Table(_)) {
+                    table_ends.extend(first_line_after_table_rows(content, range));
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+    }
+
+    let mut result = String::with_capacity(content.len() + table_ends.len());
+    let mut copied = 0;
+    for end in table_ends {
+        result.push_str(&content[copied..end]);
+        result.push('\n');
+        copied = end;
+    }
+    result.push_str(&content[copied..]);
+    result
+}
+
+/// Where the line of a table that ends it for HonKit starts, if there is one
+fn first_line_after_table_rows(content: &str, table: std::ops::Range<usize>) -> Option<usize> {
+    let mut lines = content[table.clone()].split_inclusive('\n').peekable();
+    let header = lines.next()?;
+    let separator = lines.next()?;
+    let outer_pipes =
+        header.trim_start().starts_with('|') && separator.trim_start().starts_with('|');
+    let is_row = |line: &str| {
+        if outer_pipes {
+            line.trim_start().starts_with('|')
+        } else {
+            line.contains('|')
+        }
+    };
+
+    let mut start = table.start + header.len() + separator.len();
+    while let Some(line) = lines.next() {
+        if !is_row(line) && !lines.peek().is_some_and(|next| is_row(next)) {
+            return Some(start);
+        }
+        start += line.len();
+    }
+    None
 }
 
 /// Add trailing pipe to table row if missing
@@ -933,18 +1202,19 @@ fn generate_separator_row(col_count: usize, original: &str) -> String {
 /// - Missing: converts "##見出し" to "## 見出し" (HonKit does not need the space)
 ///
 /// A missing space is only fixed when text can follow, so that the mask
-/// "####-####-####" stays literal, and not on lines indented like a code block.
+/// "####-####-####" stays literal, and not on lines indented as far as a code block:
+/// the space would not make them a heading.
 fn fix_heading_marker_spaces(content: &str) -> String {
-    let mut fence = FenceTracker::default();
-
     content
         .lines()
-        .map(|line| {
-            if fence.is_code_line(line) {
+        .zip(line_kinds(content))
+        .map(|(line, kind)| {
+            if kind != LineKind::Markdown {
                 return line.to_string();
             }
 
-            let trimmed = line.trim_start();
+            // Only spaces and tabs indent: a line after a full-width space is text
+            let trimmed = line.trim_start_matches([' ', '\t']);
             let hash_count = trimmed.chars().take_while(|&c| c == '#').count();
             if !(1..=6).contains(&hash_count) {
                 return line.to_string();
@@ -961,7 +1231,7 @@ fn fix_heading_marker_spaces(content: &str) -> String {
             let starts_text = after_hashes.chars().next().is_some_and(|c| {
                 !c.is_whitespace() && (c.is_alphanumeric() || !c.is_ascii() || "[(*_`<".contains(c))
             });
-            if starts_text && leading_whitespace.len() <= 3 {
+            if starts_text && indent_width(leading_whitespace) <= 3 {
                 return format!("{}{} {}", leading_whitespace, marker, after_hashes);
             }
 
@@ -969,6 +1239,14 @@ fn fix_heading_marker_spaces(content: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The width of a line's indentation: a tab goes to the next multiple of 4
+fn indent_width(indentation: &str) -> usize {
+    indentation.chars().fold(0, |width, c| match c {
+        '\t' => width + 4 - width % 4,
+        _ => width + 1,
+    })
 }
 
 /// Whether a line, without its indentation, starts a list item
@@ -986,9 +1264,20 @@ fn is_list_item(trimmed: &str) -> bool {
 /// CommonMark the comment is an HTML block that ends the list item, and a deeper item
 /// after it becomes a code block.
 fn remove_comments_between_list_items(content: &str) -> String {
+    let mut content = content.to_string();
+    // A deeper item after a comment reads as code until the comment is gone, so a comment
+    // after that item only shows on the next pass
+    while let Some(fewer_lines) = remove_list_comments_in_one_pass(&content) {
+        content = fewer_lines;
+    }
+    content
+}
+
+/// Returns the document without the comments found, or None if there are none
+fn remove_list_comments_in_one_pass(content: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
+    let kinds = line_kinds(content);
     let mut result = Vec::with_capacity(lines.len());
-    let mut fence = FenceTracker::default();
     // Whether the lines since the last blank line include a list item
     let mut in_list = false;
     let mut i = 0;
@@ -996,7 +1285,7 @@ fn remove_comments_between_list_items(content: &str) -> String {
     while i < lines.len() {
         let line = lines[i];
 
-        if fence.is_code_line(line) {
+        if matches!(kinds[i], LineKind::Code | LineKind::RawHtml) {
             result.push(line);
             i += 1;
             continue;
@@ -1024,13 +1313,13 @@ fn remove_comments_between_list_items(content: &str) -> String {
         i += 1;
     }
 
-    result.join("\n")
+    (result.len() < lines.len()).then(|| result.join("\n"))
 }
 
 /// Percent-encode the spaces and angle brackets of a link destination, the way HonKit
 /// reads "[text](a b.md)". CommonMark would leave it as text.
 fn fix_link_destinations_with_spaces(content: &str) -> String {
-    map_outside_code(content, |text| {
+    map_markdown_text(content, |text| {
         let mut result = String::with_capacity(text.len());
         let mut rest = text;
 
@@ -1083,25 +1372,19 @@ fn split_link_title(destination: &str) -> (&str, &str) {
 /// win, CommonMark the first.
 fn keep_last_reference_definitions(content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    let mut fence = FenceTracker::default();
-    let mut in_html_comment = false;
+    let labels: Vec<Option<String>> = lines
+        .iter()
+        .zip(line_kinds(content))
+        .map(|(line, kind)| match kind {
+            LineKind::Markdown => reference_definition_label(line),
+            _ => None,
+        })
+        .collect();
     let mut last_definition = std::collections::HashMap::new();
-    let mut labels: Vec<Option<String>> = Vec::with_capacity(lines.len());
-
-    for (i, line) in lines.iter().enumerate() {
-        let mut label = None;
-        if in_html_comment {
-            in_html_comment = !line.contains("-->");
-        } else if !fence.is_code_line(line) {
-            if let Some(start) = line.find("<!--") {
-                in_html_comment = !line[start..].contains("-->");
-            }
-            label = reference_definition_label(line);
-        }
-        if let Some(label) = &label {
+    for (i, label) in labels.iter().enumerate() {
+        if let Some(label) = label {
             last_definition.insert(label.clone(), i);
         }
-        labels.push(label);
     }
 
     lines
@@ -1128,7 +1411,10 @@ fn reference_definition_label(line: &str) -> Option<String> {
     }
 
     let (label, destination) = rest.split_once("]:")?;
-    if label.trim().is_empty() || label.contains(['[', ']']) || destination.trim().is_empty() {
+    if label.trim().is_empty()
+        || label.contains(['[', ']'])
+        || !is_reference_destination(destination)
+    {
         return None;
     }
 
@@ -1141,10 +1427,43 @@ fn reference_definition_label(line: &str) -> Option<String> {
     )
 }
 
+/// Whether the text after "[label]:" is a destination with an optional title. Any other
+/// text makes the line an ordinary sentence ("[Note]: see the next page"), and two
+/// sentences that start alike must both stay.
+fn is_reference_destination(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+
+    let after_path = match text.strip_prefix('<') {
+        Some(rest) => match rest.split_once('>') {
+            Some((_, after_path)) => after_path,
+            None => return false,
+        },
+        None => &text[text.find(char::is_whitespace).unwrap_or(text.len())..],
+    };
+
+    let title = after_path.trim_start();
+    if title.is_empty() {
+        return true;
+    }
+    let closing_quote = match title.chars().next() {
+        Some('"') => '"',
+        Some('\'') => '\'',
+        Some('(') => ')',
+        _ => return false,
+    };
+    after_path.starts_with(char::is_whitespace)
+        && title.len() >= 2
+        && title.ends_with(closing_quote)
+}
+
 /// Fix image paths that contain spaces by wrapping them in angle brackets
 /// Converts ![alt](path with space.png) to ![alt](<path with space.png>)
+/// In a raw HTML block, convert_remaining_markdown_images reads the path as it is.
 fn fix_image_paths_with_spaces(content: &str) -> String {
-    map_outside_code(content, fix_image_paths_in_text)
+    map_markdown_text(content, fix_image_paths_in_text)
 }
 
 fn fix_image_paths_in_text(content: &str) -> String {
@@ -1412,12 +1731,36 @@ fn add_target_blank_to_external_links(html: &str) -> String {
     result
 }
 
+/// Elements whose text is not prose: nothing in them is a link or an image
+const VERBATIM_ELEMENTS: [&str; 5] = ["code", "pre", "script", "style", "textarea"];
+
+/// Keep track of the verbatim element that the HTML being scanned is inside, given the text
+/// of its next tag
+fn track_verbatim_element(open: &mut Option<String>, tag: &str) {
+    let tag = tag.to_lowercase();
+    if let Some(element) = open {
+        // The `<` of "a<b" in a script looks like a tag that runs up to the real one
+        let last_tag = tag.rsplit('<').next().unwrap_or(&tag);
+        if last_tag.strip_prefix('/').map(str::trim_end) == Some(element.as_str()) {
+            *open = None;
+        }
+    } else {
+        let name = tag
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or("");
+        if VERBATIM_ELEMENTS.contains(&name) {
+            *open = Some(name.to_string());
+        }
+    }
+}
+
 /// Auto-link URLs that are not already inside anchor tags or code blocks
 /// Converts bare URLs like https://example.com to <a href="..." target="_blank">...</a>
 fn autolink_urls(html: &str) -> String {
     let mut result = String::new();
     let mut chars = html.char_indices().peekable();
-    let mut in_code = false; // Track if we're inside <code> or <pre>
+    let mut verbatim_element = None;
 
     while let Some((i, c)) = chars.next() {
         // Check if we're inside an HTML tag
@@ -1434,18 +1777,12 @@ fn autolink_urls(html: &str) -> String {
                 tag_content.push(ch);
             }
 
-            // Check for code/pre tags
-            let tag_lower = tag_content.to_lowercase();
-            if tag_lower.starts_with("code") || tag_lower.starts_with("pre") {
-                in_code = true;
-            } else if tag_lower.starts_with("/code") || tag_lower.starts_with("/pre") {
-                in_code = false;
-            }
+            track_verbatim_element(&mut verbatim_element, &tag_content);
             continue;
         }
 
         // Skip auto-linking if inside code block
-        if in_code {
+        if verbatim_element.is_some() {
             result.push(c);
             continue;
         }
@@ -1510,11 +1847,11 @@ fn autolink_urls(html: &str) -> String {
 
 /// Convert remaining markdown image syntax ![alt](url) to <img> tags
 /// This handles images inside raw HTML blocks that pulldown-cmark doesn't parse
-/// Skips content inside <code> and <pre> tags
+/// Skips content inside verbatim elements
 fn convert_remaining_markdown_images(html: &str) -> String {
     let mut result = String::new();
     let mut chars = html.char_indices().peekable();
-    let mut in_code = false; // Track if we're inside <code> or <pre>
+    let mut verbatim_element = None;
 
     while let Some((i, c)) = chars.next() {
         // Check if we're inside an HTML tag
@@ -1531,18 +1868,12 @@ fn convert_remaining_markdown_images(html: &str) -> String {
                 tag_content.push(ch);
             }
 
-            // Check for code/pre tags
-            let tag_lower = tag_content.to_lowercase();
-            if tag_lower.starts_with("code") || tag_lower.starts_with("pre") {
-                in_code = true;
-            } else if tag_lower.starts_with("/code") || tag_lower.starts_with("/pre") {
-                in_code = false;
-            }
+            track_verbatim_element(&mut verbatim_element, &tag_content);
             continue;
         }
 
         // Skip image conversion if inside code block
-        if in_code {
+        if verbatim_element.is_some() {
             result.push(c);
             continue;
         }
@@ -2889,4 +3220,360 @@ fn test_unclosed_image_stays_text() {
 
     let html = render_markdown("![代替](a b.png");
     assert!(html.contains("<p>![代替](a b.png</p>"), "{}", html);
+}
+
+#[test]
+fn test_source_fixes_leave_raw_html_blocks_alone() {
+    // Nothing in these is read as Markdown: each line has to come out as it was written
+    let lines = [
+        "#tbl td { color: red; }",
+        "##heading",
+        "see [x](a b)",
+        "[dup]: one.html",
+        "[dup]: two.html",
+        "| A |",
+        "|---|",
+        "| 1 | 2 |",
+        "[^1]: a footnote",
+        "a reference [^1]",
+        "![alt](a b.png)",
+    ];
+    for tag in ["style", "script", "pre", "textarea"] {
+        let md = format!("<{tag}>\n{}\n</{tag}>\n", lines.join("\n"));
+        let html = render_markdown(&md);
+        for line in lines {
+            assert!(html.contains(line), "<{tag}>: {line}: {html}");
+        }
+        assert!(extract_headings(&md).is_empty(), "<{tag}>");
+    }
+
+    // A <div> runs to the blank line, a comment to its end
+    let md = format!("<div>\n{}\n</div>\n", lines[..8].join("\n"));
+    let html = render_markdown(&md);
+    for line in &lines[..8] {
+        assert!(html.contains(line), "<div>: {line}: {html}");
+    }
+    let md = format!("<!--\n{}\n-->\n", lines.join("\n"));
+    assert_eq!(render_markdown(&md).trim(), md.trim());
+
+    // After the block, the source is Markdown again
+    let html = render_markdown("<style>\n#x { }\n</style>\n\n##見出し\n\n[リンク](a b)\n");
+    assert!(html.contains("<h2 id=\"見出し\">"), "{}", html);
+    assert!(html.contains("<a href=\"a%20b\">"), "{}", html);
+}
+
+#[test]
+fn test_fences_in_raw_html_do_not_open() {
+    // A fence inside a <pre> opens nothing: the heading after it is still a heading
+    let html = render_markdown("<pre>\n```\n</pre>\n\n##見出し\n\n[^1]: 脚注\n");
+    assert!(html.contains("<h2 id=\"見出し\">"), "{}", html);
+    assert!(html.contains("<blockquote id=\"fn_1\">"), "{}", html);
+}
+
+#[test]
+fn test_source_fixes_leave_indented_code_alone() {
+    let lines = [
+        "##code",
+        "see [x](a b)",
+        "[dup]: one.html",
+        "[dup]: two.html",
+        "| A |",
+        "|---|",
+        "| 1 | 2 |",
+        "[^1]: a footnote",
+        "a reference [^1]",
+        "![alt](a b.png)",
+    ];
+    for indent in ["    ", "\t", "  \t"] {
+        let md = lines
+            .iter()
+            .map(|line| format!("{indent}{line}\n"))
+            .collect::<String>();
+        let html = render_markdown(&md);
+        assert!(html.starts_with("<pre><code>"), "{:?}: {}", indent, html);
+        for line in lines {
+            assert!(html.contains(line), "{:?}: {}: {}", indent, line, html);
+        }
+    }
+}
+
+#[test]
+fn test_hash_after_tab_in_a_paragraph_stays_literal() {
+    let html = render_markdown("段落\n\t##続き\n");
+    assert!(html.contains("##続き"), "{}", html);
+    assert!(!html.contains("<h2"), "{}", html);
+}
+
+#[test]
+fn test_hash_after_full_width_space_stays_literal() {
+    // A full-width space does not indent: the line is text, with nothing added to it
+    let html = render_markdown("　##見出し\n");
+    assert!(html.contains("<p>　##見出し</p>"), "{}", html);
+}
+
+#[test]
+fn test_sentence_after_bracket_is_not_a_reference_definition() {
+    let md = "[注意]: 次の ページ を参照\n\n本文\n\n[注意]: 別の 文章 です\n";
+    let html = render_markdown(md);
+    assert!(html.contains("[注意]: 次の ページ を参照"), "{}", html);
+    assert!(html.contains("[注意]: 別の 文章 です"), "{}", html);
+
+    // A quote that does not close, and text after a closing bracket
+    for line in ["[注意]: a \"b", "[注意]: a \"b\" c", "[注意]: <a> b"] {
+        let html = render_markdown(&format!("{line}\n\n本文\n\n{line}\n"));
+        assert_eq!(html.matches("[注意]:").count(), 2, "{}", html);
+    }
+}
+
+#[test]
+fn test_last_reference_definition_wins_in_every_form() {
+    for first in [
+        "[リンク]: first.html",
+        "[リンク]:first.html",
+        "[リンク]: <first file.html>",
+        "[リンク]: first.html \"題 名\"",
+        "[リンク]: first.html '題 名'",
+        "[リンク]: first.html (題 名)",
+    ] {
+        let html = render_markdown(&format!("[リンク]\n\n{first}\n\n[リンク]: last.html\n"));
+        assert!(html.contains("<a href=\"last.html\""), "{}", html);
+        assert!(!html.contains("first"), "{}", html);
+    }
+}
+
+#[test]
+fn test_comment_in_code_or_raw_html_after_a_list_item_is_kept() {
+    // Code that looks like a list, then a comment, then an item
+    let html = render_markdown("    - コード\n    <!-- メモ -->\n    - コード\n");
+    assert!(html.contains("&lt;!-- メモ --&gt;"), "{}", html);
+
+    let html = render_markdown("- 一\n<pre>\n<!-- メモ -->\n- 二\n</pre>\n");
+    assert!(html.contains("<!-- メモ -->"), "{}", html);
+    assert!(html.contains("- 二"), "{}", html);
+}
+
+#[test]
+fn test_several_comments_between_list_lines() {
+    // The second comment reads as code until the first is gone
+    let html = render_markdown("- 親\n<!-- 一 -->\n    - 子\n    <!-- 二 -->\n    - 子の次\n");
+    assert!(!html.contains("<!--"), "{}", html);
+    assert!(!html.contains("<pre>"), "{}", html);
+    assert!(html.contains("<li>子</li>"), "{}", html);
+    assert!(html.contains("<li>子の次</li>"), "{}", html);
+}
+
+#[test]
+fn test_footnote_continuation_with_raw_html() {
+    // A blank line inside the <pre> does not end the footnote
+    let html = render_markdown("[^1]: 一行目\n<pre>\n一\n\n二\n</pre>\n\n本文\n");
+    assert!(html.contains("<pre>\n一\n\n二\n</pre>"), "{}", html);
+    assert_eq!(html.matches("<blockquote").count(), 1, "{}", html);
+}
+
+#[test]
+fn test_footnote_continuation_with_indented_fence() {
+    // Once dedented it is a fence, and a blank line inside it does not end the footnote
+    let html = render_markdown("[^1]: 一行目\n    ```\n    一\n\n    二\n    ```\n\n本文\n");
+    assert!(
+        html.contains("<pre><code>一\n\n二\n</code></pre>"),
+        "{}",
+        html
+    );
+    assert!(html.contains("<p>本文</p>"), "{}", html);
+}
+
+#[test]
+fn test_urls_and_images_in_verbatim_elements_are_left_alone() {
+    for tag in ["script", "style", "textarea", "pre", "code"] {
+        let md = format!(
+            "<{tag}>\nhttps://example.com/in\nif (a<b) x = ![alt](in.png);\n</{tag}>\n\nhttps://example.com/out\n\n<div>![alt](out.png)</div>\n"
+        );
+        let html = render_markdown(&md);
+        assert!(
+            html.contains("\nhttps://example.com/in\n"),
+            "<{tag}>: {html}"
+        );
+        assert!(html.contains("![alt](in.png)"), "<{tag}>: {html}");
+        // The element ends where it ends, even after a "<" that opens nothing
+        assert!(
+            html.contains("<a href=\"https://example.com/out\""),
+            "<{tag}>: {html}"
+        );
+        assert!(html.contains("<img src=\"out.png\""), "<{tag}>: {html}");
+    }
+
+    // A tag that only starts like one of them
+    let html = render_markdown("<preview>https://example.com/a</preview>\n");
+    assert!(
+        html.contains("<a href=\"https://example.com/a\""),
+        "{}",
+        html
+    );
+
+    // Code inside <pre> does not end the <pre>
+    let html = render_markdown("<pre><code>一</code>\nhttps://example.com/a\n</pre>\n");
+    assert!(!html.contains("<a href"), "{}", html);
+}
+
+#[test]
+fn test_footnote_label_with_symbols_is_a_reference_when_defined() {
+    let html = render_markdown("| a |\n|---|\n| x[^3-1] |\n\n[^3-1]: note\n");
+    assert!(
+        html.contains("<td>x<sup><a href=\"#fn_3-1\" id=\"reffn_3-1\">3-1</a></sup></td>"),
+        "{}",
+        html
+    );
+    assert!(html.contains("<blockquote id=\"fn_3-1\">"), "{}", html);
+    assert!(!html.contains("%%FN"), "{}", html);
+
+    for label in ["a_b", "1.2"] {
+        let html = render_markdown(&format!("x[^{0}]\n\n[^{0}]: note\n", label));
+        assert!(
+            html.contains(&format!("id=\"reffn_{}\"", label)),
+            "{}",
+            html
+        );
+    }
+}
+
+#[test]
+fn test_footnote_label_with_symbols_stays_text_without_a_definition() {
+    let html = render_markdown("Use [^a-z] here.\n\n[^1]: note\n");
+    assert!(html.contains("Use [^a-z] here."), "{}", html);
+    assert!(!html.contains("reffn_a-z"), "{}", html);
+}
+
+#[test]
+fn test_footnote_label_of_letters_and_digits_needs_no_definition() {
+    let html = render_markdown("x[^7]\n");
+    assert!(html.contains("id=\"reffn_7\""), "{}", html);
+}
+
+#[test]
+fn test_list_items_are_loose_one_by_one() {
+    let html = render_markdown("- a\n- b\n\n- c\n- d\n");
+    assert!(html.contains("<li>a</li>"), "{}", html);
+    assert!(html.contains("<li>\n<p>b</p>\n</li>"), "{}", html);
+    assert!(html.contains("<li>\n<p>c</p>\n</li>"), "{}", html);
+    assert!(html.contains("<li>d</li>"), "{}", html);
+}
+
+#[test]
+fn test_blank_line_in_a_nested_list_makes_the_item_loose() {
+    let html = render_markdown("- a\n  - b\n\n  - c\n- d\n");
+    assert!(html.contains("<p>a</p>"), "{}", html);
+    assert!(html.contains("<p>b</p>"), "{}", html);
+    assert!(html.contains("<p>c</p>"), "{}", html);
+    assert!(html.contains("<li>d</li>"), "{}", html);
+}
+
+#[test]
+fn test_loose_list_item_keeps_text_and_nested_list_apart() {
+    let html = render_markdown("- a\n\n  - c\n- d\n");
+    assert!(html.contains("<p>a</p>"), "{}", html);
+    assert!(html.contains("<li>c</li>"), "{}", html);
+    assert!(html.contains("<li>d</li>"), "{}", html);
+}
+
+#[test]
+fn test_paragraph_added_to_a_list_item_holds_its_inline_markup() {
+    for (markdown, expected) in [
+        ("*a*", "<em>a</em>"),
+        ("**a**", "<strong>a</strong>"),
+        ("~~a~~", "<del>a</del>"),
+        ("[a](b.html)", "<a href=\"b.html\">a</a>"),
+        ("![a](b.png)", "<img src=\"b.png\" alt=\"a\" />"),
+    ] {
+        // Tight as CommonMark reads it, so the parser does not add the paragraph itself
+        let html = render_markdown(&format!("- {} x\n  - c\n\n  - d\n- e\n", markdown));
+        assert!(html.contains(&format!("<p>{} x</p>", expected)), "{}", html);
+    }
+}
+
+#[test]
+fn test_blank_line_after_the_last_item_does_not_make_it_loose() {
+    let html = render_markdown("- a\n- b\n\nafter\n");
+    assert!(html.contains("<li>a</li>"), "{}", html);
+    assert!(html.contains("<li>b</li>"), "{}", html);
+}
+
+#[test]
+fn test_line_of_spaces_is_a_blank_line_in_a_list() {
+    let html = render_markdown("- a\n   \n- b\n- c\n");
+    assert!(html.contains("<p>a</p>"), "{}", html);
+    assert!(html.contains("<p>b</p>"), "{}", html);
+    assert!(html.contains("<li>c</li>"), "{}", html);
+}
+
+#[test]
+fn test_list_in_a_quote_is_left_to_the_parser() {
+    let html = render_markdown("> - a\n>\n> - b\n");
+    assert!(html.contains("<p>a</p>"), "{}", html);
+    assert!(html.contains("<p>b</p>"), "{}", html);
+}
+
+#[test]
+fn test_line_without_a_pipe_ends_a_table() {
+    let html = render_markdown("| a |\n|---|\n| 1 |\nnote\n\nafter\n");
+    assert!(html.contains("<p>note</p>"), "{}", html);
+    assert_eq!(html.matches("<tr>").count(), 2, "{}", html);
+}
+
+#[test]
+fn test_row_of_a_table_with_outer_pipes_starts_with_a_pipe() {
+    let html = render_markdown("| a | b |\n|---|---|\n| 1 | 2 |\nc | d\n");
+    assert!(html.contains("<p>c | d</p>"), "{}", html);
+    assert_eq!(html.matches("<tr>").count(), 2, "{}", html);
+}
+
+#[test]
+fn test_row_of_a_table_without_outer_pipes_has_a_pipe_anywhere() {
+    let html = render_markdown("a | b\n---|---\n1 | 2\nc | d\nnote\n");
+    assert!(html.contains("<td>c</td>"), "{}", html);
+    assert!(html.contains("<p>note</p>"), "{}", html);
+}
+
+#[test]
+fn test_line_without_a_pipe_after_a_table_in_a_list_is_left_to_the_parser() {
+    let html = render_markdown("- x\n\n  | a |\n  |---|\n  | 1 |\n  note\n- y\n");
+    assert!(html.contains("<td>note</td>"), "{}", html);
+    assert!(html.contains("<li>y</li>"), "{}", html);
+}
+
+#[test]
+fn test_line_without_a_pipe_between_rows_stays_in_the_table() {
+    let html = render_markdown("| a |\n|---|\n| 1 |\nnote\n| 2 |\nend\n");
+    assert!(html.contains("<td>note</td>"), "{}", html);
+    assert!(html.contains("<td>2</td>"), "{}", html);
+    assert!(html.contains("<p>end</p>"), "{}", html);
+}
+
+#[test]
+fn test_footnote_continuation_is_read_as_markdown() {
+    // The first line alone reads as a reference definition, and the indented lines as code
+    let html = render_markdown("[^1]: 注\n    [リンク](a b.md)\n");
+    assert!(
+        html.contains("<a href=\"a%20b.html\">リンク</a>"),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("[^1]: 注\n    ![代替](a b.png)\n");
+    assert!(html.contains("<img src=\"a%20b.png\""), "{}", html);
+
+    let html = render_markdown("[^1]: 注\n    続き[^2]\n\n[^2]: 次\n");
+    assert!(
+        html.contains("<a href=\"#fn_2\" id=\"reffn_2\">"),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("[^1]: 注\n    - 一\n    <!-- メモ -->\n    - 二\n");
+    assert!(!html.contains("メモ"), "{}", html);
+
+    let html = render_markdown("[^1]: 注\n    | A |\n    |---|\n    | 1 | 2 |\n");
+    assert!(html.contains("<td>2</td>"), "{}", html);
+
+    let html = render_markdown("![代替][a]\n\n[^1]: 注\n    [a]: first.png\n    [a]: last.png\n");
+    assert!(html.contains("<img src=\"last.png\""), "{}", html);
 }
