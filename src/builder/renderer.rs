@@ -11,7 +11,7 @@ pub struct TocItem {
 
 /// Extract headings from markdown content for TOC generation
 pub fn extract_headings(content: &str) -> Vec<TocItem> {
-    let content = fix_fullwidth_heading_spaces(content);
+    let content = fix_heading_marker_spaces(content);
 
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -20,7 +20,7 @@ pub fn extract_headings(content: &str) -> Vec<TocItem> {
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
 
-    let parser = Parser::new_ext(&content, options);
+    let parser = parse_with_honkit_inline_rules(&content, options);
 
     let mut headings = Vec::new();
     let mut in_heading: Option<HeadingLevel> = None;
@@ -100,17 +100,17 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     // Strip all UTF-8 BOM characters (fixes reference link parsing issues)
     // BOM can appear at start of file or in concatenated content from @import
     let content = content.replace('\u{FEFF}', "");
-    // Preprocess: fix full-width spaces after heading markers
-    let content = fix_fullwidth_heading_spaces(&content);
+    // Preprocess: fix missing or full-width spaces after heading markers
+    let content = fix_heading_marker_spaces(&content);
     // Preprocess: fix image paths with spaces
     let content = fix_image_paths_with_spaces(&content);
-    // Preprocess: fix multi-line footnotes without proper indentation
-    let content = fix_multiline_footnotes(&content);
-    // Preprocess: fix malformed table separator rows
+    // Preprocess: let the last definition of a reference label win
+    let content = keep_last_reference_definitions(&content);
+    // Preprocess: fix malformed table rows
     let content = fix_table_separator_columns(&content);
 
-    // Convert footnote definitions to inline format (preserve original position)
-    let content = convert_footnote_definitions_inline(&content, hardbreaks);
+    // Convert footnote definitions to placeholders (preserve original position)
+    let content = convert_footnote_definitions_inline(&content);
 
     // Convert footnote references [^n] to placeholders BEFORE markdown parsing
     // This prevents [A][^1] from being interpreted as a markdown link reference
@@ -124,7 +124,7 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
 
-    let parser = Parser::new_ext(&content, options);
+    let parser = parse_with_honkit_inline_rules(&content, options);
 
     // Process events to handle mermaid code blocks and heading IDs
     let mut in_mermaid = false;
@@ -215,6 +215,10 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     let mut html_output = String::new();
     html::push_html(&mut html_output, events.into_iter());
 
+    // Convert footnote placeholders to HTML. Before autolinking, which would take a
+    // placeholder right after a URL for the rest of the URL.
+    html_output = convert_footnote_placeholders_to_html(&html_output);
+
     // Fix relative links: convert .md to .html
     html_output = fix_relative_links(&html_output);
 
@@ -230,10 +234,197 @@ fn render_markdown_internal(content: &str, hardbreaks: bool) -> String {
     // Convert any remaining markdown images inside HTML blocks to <img> tags
     html_output = convert_remaining_markdown_images(&html_output);
 
-    // Convert footnote placeholders to HTML
-    html_output = convert_footnote_placeholders_to_html(&html_output);
-
     html_output
+}
+
+/// Parse markdown into events, following HonKit where its inline rules differ from
+/// CommonMark:
+/// - Only `~~` strikes through: a single `~` stays literal ("0~100 and 0~100")
+/// - `__bold__` also works next to a letter (see find_intraword_strong)
+fn parse_with_honkit_inline_rules(content: &str, options: Options) -> Vec<Event<'_>> {
+    let mut events = Vec::new();
+    // For each open strikethrough, whether it was written with a single `~`
+    let mut strikethroughs = Vec::new();
+    // Adjacent text, merged: pulldown-cmark splits it at every unresolved delimiter
+    let mut text_run = TextRun::default();
+    // Inside a code block or an image description, text is not inline markdown
+    let mut verbatim_depth = 0;
+
+    for (event, range) in Parser::new_ext(content, options).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Strikethrough) => {
+                let single = !content[range.clone()].starts_with("~~");
+                strikethroughs.push(single);
+                if single {
+                    text_run.push("~", range.start..range.start + 1);
+                } else {
+                    text_run.flush_into(&mut events, content);
+                    events.push(Event::Start(Tag::Strikethrough));
+                }
+            }
+            Event::End(TagEnd::Strikethrough) => {
+                if strikethroughs.pop() == Some(true) {
+                    text_run.push("~", range.end - 1..range.end);
+                } else {
+                    text_run.flush_into(&mut events, content);
+                    events.push(Event::End(TagEnd::Strikethrough));
+                }
+            }
+            Event::Text(text) if verbatim_depth == 0 => text_run.push(&text, range),
+            event => {
+                text_run.flush_into(&mut events, content);
+                match &event {
+                    Event::Start(Tag::CodeBlock(_) | Tag::Image { .. }) => verbatim_depth += 1,
+                    Event::End(TagEnd::CodeBlock | TagEnd::Image) => verbatim_depth -= 1,
+                    _ => {}
+                }
+                events.push(event);
+            }
+        }
+    }
+    text_run.flush_into(&mut events, content);
+
+    events
+}
+
+/// Adjacent text events on their way to becoming one
+#[derive(Default)]
+struct TextRun {
+    text: String,
+    source_start: Option<usize>,
+    source_end: usize,
+}
+
+impl TextRun {
+    fn push(&mut self, text: &str, source: std::ops::Range<usize>) {
+        self.text.push_str(text);
+        self.source_start.get_or_insert(source.start);
+        self.source_end = source.end;
+    }
+
+    fn flush_into<'a>(&mut self, events: &mut Vec<Event<'a>>, content: &str) {
+        let Some(source_start) = self.source_start.take() else {
+            return;
+        };
+        let text = std::mem::take(&mut self.text);
+        let mut rest = text.as_str();
+
+        // A backslash-escaped underscore looks the same as a delimiter once parsed
+        if !content[source_start..self.source_end].contains("\\_") {
+            while let Some((open, close)) = find_intraword_strong(rest) {
+                if open > 0 {
+                    events.push(Event::Text(rest[..open].to_string().into()));
+                }
+                events.push(Event::Start(Tag::Strong));
+                events.push(Event::Text(rest[open + 2..close].to_string().into()));
+                events.push(Event::End(TagEnd::Strong));
+                rest = &rest[close + 2..];
+            }
+        }
+
+        if !rest.is_empty() {
+            events.push(Event::Text(rest.to_string().into()));
+        }
+    }
+}
+
+/// Find the next `__bold__` in text that CommonMark left literal because a delimiter
+/// touches a letter ("これは__太字__です"). HonKit renders it bold. Only when non-ASCII
+/// text is involved: identifiers like SOME__NAME__HERE and URLs stay literal.
+/// Returns the byte offsets of the opening and the closing delimiter.
+fn find_intraword_strong(text: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+
+    while let Some(found) = text[from..].find("__") {
+        let open = from + found;
+        let inner = open + 2;
+        let before = text[..open].chars().last();
+        let first = text[inner..].chars().next();
+
+        // An opening delimiter is not part of a longer run and is followed by text
+        if before == Some('_') || first.is_none_or(|c| c == '_' || c.is_whitespace()) {
+            from = inner;
+            continue;
+        }
+
+        let close = find_closing_strong(text, inner)?;
+        // The words the delimiters touch
+        let word_before = text[..open]
+            .rsplit(char::is_whitespace)
+            .next()
+            .unwrap_or("");
+        let word_after = text[close + 2..]
+            .split(char::is_whitespace)
+            .next()
+            .unwrap_or("");
+        let is_ascii =
+            word_before.is_ascii() && text[inner..close].is_ascii() && word_after.is_ascii();
+        if !is_ascii && !word_before.contains("://") {
+            return Some((open, close));
+        }
+        from = close + 2;
+    }
+
+    None
+}
+
+/// Find the `__` closing a bold that starts at inner: it follows text and is not part
+/// of a longer run
+fn find_closing_strong(text: &str, inner: usize) -> Option<usize> {
+    let mut from = inner;
+
+    while let Some(found) = text[from..].find("__") {
+        let close = from + found;
+        let follows_text = close > inner && !text[..close].ends_with(char::is_whitespace);
+        if follows_text && !text[close + 2..].starts_with('_') {
+            return Some(close);
+        }
+        from = close + 1;
+    }
+
+    None
+}
+
+/// Tells which lines of a document belong to a fenced code block, for the fixes that
+/// work on the text before it is parsed
+#[derive(Default)]
+struct FenceTracker {
+    /// (fence_char, fence_length) while inside a fenced code block
+    open: Option<(char, usize)>,
+}
+
+impl FenceTracker {
+    fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Feed the next line. Returns true if it belongs to a fenced code block, the
+    /// opening and closing fences included.
+    fn is_code_line(&mut self, line: &str) -> bool {
+        let trimmed = line.trim_start();
+
+        if let Some((fence_char, fence_len)) = self.open {
+            // Closing fence: a run of the same char, at least as long, alone on the line
+            let run = trimmed.chars().take_while(|&c| c == fence_char).count();
+            if run >= fence_len && trimmed.trim_end().chars().all(|c| c == fence_char) {
+                self.open = None;
+            }
+            return true;
+        }
+
+        let fence_char = match trimmed.chars().next() {
+            Some(c @ ('`' | '~')) => c,
+            _ => return false,
+        };
+        let fence_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+        // The info string of a backtick fence has no backticks: "```x```" is inline code
+        if fence_len < 3 || (fence_char == '`' && trimmed[fence_len..].contains('`')) {
+            return false;
+        }
+
+        self.open = Some((fence_char, fence_len));
+        true
+    }
 }
 
 fn heading_level_to_num(level: HeadingLevel) -> u8 {
@@ -298,174 +489,88 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Collect reference link definitions from markdown content
-/// Returns a map of label -> url
-fn collect_reference_links(content: &str) -> std::collections::HashMap<String, String> {
-    let mut links = std::collections::HashMap::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        // Match [label]: url pattern (but not footnote definitions [^n]:)
-        if trimmed.starts_with('[') && !trimmed.starts_with("[^") {
-            if let Some(bracket_end) = trimmed.find("]:") {
-                let label = &trimmed[1..bracket_end];
-                let url = trimmed[bracket_end + 2..].trim();
-                if !label.is_empty() && !url.is_empty() {
-                    // Remove optional angle brackets around URL
-                    let url = url.trim_start_matches('<').trim_end_matches('>');
-                    links.insert(label.to_lowercase(), url.to_string());
-                }
-            }
-        }
-    }
-
-    links
-}
-
-/// Resolve reference links in text (e.g., [A] -> <a href="url">A</a>)
-/// Handles both shortcut style [label] and full style [text][ref]
-fn resolve_reference_links(
-    text: &str,
-    reference_links: &std::collections::HashMap<String, String>,
-) -> String {
-    let mut result = String::new();
-    let mut chars = text.char_indices().peekable();
-
-    while let Some((i, c)) = chars.next() {
-        if c == '[' {
-            // Check for [label] or [text][ref] pattern
-            let rest = &text[i + c.len_utf8()..];
-            if let Some(end_byte) = rest.find(']') {
-                let first_label = &rest[..end_byte];
-                let after_bracket = &rest[end_byte + 1..];
-
-                // Check for full reference link [text][ref]
-                if let Some(after_second_open) = after_bracket.strip_prefix('[') {
-                    // Find the second closing bracket
-                    if let Some(second_end_byte) = after_second_open.find(']') {
-                        let ref_label = &after_second_open[..second_end_byte];
-                        // Look up the reference (use ref_label, or first_label if ref is empty)
-                        let lookup_key = if ref_label.is_empty() {
-                            first_label.to_lowercase()
-                        } else {
-                            ref_label.to_lowercase()
-                        };
-                        if let Some(url) = reference_links.get(&lookup_key) {
-                            result.push_str(&format!("<a href=\"{}\">{}</a>", url, first_label));
-                            // Skip past [text][ref] - count characters (not bytes) to skip
-                            // Pattern: [text][ref] - we need to skip: text + ] + [ + ref + ]
-                            let chars_to_skip =
-                                first_label.chars().count() + 1 + 1 + ref_label.chars().count() + 1;
-                            for _ in 0..chars_to_skip {
-                                chars.next();
-                            }
-                            continue;
-                        }
-                    }
-                }
-
-                // Check for inline link [text](url) - skip these, pulldown-cmark handles them
-                if after_bracket.starts_with('(') {
-                    result.push(c);
-                    continue;
-                }
-
-                // This is a shortcut reference link [label]
-                if let Some(url) = reference_links.get(&first_label.to_lowercase()) {
-                    result.push_str(&format!("<a href=\"{}\">{}</a>", url, first_label));
-                    // Skip past the [label] - count characters to skip: label + ]
-                    let chars_to_skip = first_label.chars().count() + 1;
-                    for _ in 0..chars_to_skip {
-                        chars.next();
-                    }
-                    continue;
-                }
-            }
-        }
-        result.push(c);
-    }
-
-    result
-}
-
-/// Convert footnote definitions in-place to HTML (preserve original position)
-fn convert_footnote_definitions_inline(content: &str, hardbreaks: bool) -> String {
-    // Collect reference link definitions for resolving within footnotes
-    let reference_links = collect_reference_links(content);
-
+/// Convert footnote definitions in place (HonKit style): the first line becomes a
+/// blockquote holding the number and the back link; the lines after it stay in the
+/// document, so they see its reference definitions and are rendered like any other block.
+///
+/// The first line is wrapped in placeholders rather than HTML because an HTML block
+/// would not be parsed as markdown. See convert_footnote_placeholders_to_html.
+fn convert_footnote_definitions_inline(content: &str) -> String {
     let mut result_lines = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
+    let mut fence = FenceTracker::default();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
-        // Check if this line starts a footnote definition [^n]:
-        if let Some(captures) = parse_footnote_def_start(line) {
-            let (number, first_line_content) = captures;
-            // Trim trailing whitespace from first line (for hardbreaks consistency)
-            let first_line_content = first_line_content.trim_end();
+        i += 1;
 
-            // Resolve reference links in the first line content
-            let first_line_resolved = resolve_reference_links(first_line_content, &reference_links);
-
-            let mut continuation_lines: Vec<String> = Vec::new();
-
-            // Collect continuation lines (indented or list items until next footnote/heading/blank)
-            i += 1;
-            while i < lines.len() {
-                let next_line = lines[i];
-                let trimmed = next_line.trim_start();
-
-                // Stop if: empty line, new footnote, heading
-                if trimmed.is_empty() {
-                    break;
-                }
-                if trimmed.starts_with("[^") && trimmed.contains("]:") {
-                    break;
-                }
-                if trimmed.starts_with('#') {
-                    break;
-                }
-
-                // This is a continuation line - resolve reference links
-                let resolved_line = resolve_reference_links(next_line, &reference_links);
-                continuation_lines.push(resolved_line);
-                i += 1;
-            }
-
-            // Convert to inline HTML at original position (HonKit style)
-            // First line goes inline with number, return link right after first line
-            // Then continuation content (lists, etc.) follows
-            let return_link = format!(
-                "<a href=\"#reffn_{}\" title=\"Jump back to footnote [{}] in the text.\"> ↩</a>",
-                number, number
-            );
-
-            if continuation_lines.is_empty() {
-                // Single-line footnote: <blockquote><sup>n</sup>. content ↩</blockquote>
-                // Use blockquote to match HonKit styling (left border)
-                result_lines.push(format!(
-                    "<blockquote id=\"fn_{}\"><sup>{}</sup>. {}{}</blockquote>",
-                    number, number, first_line_resolved, return_link
-                ));
-            } else {
-                // Multi-line footnote: first line in blockquote, continuation outside
-                // This matches HonKit behavior: blockquote has border, continuation doesn't
-                let continuation_content = continuation_lines.join("\n");
-                let continuation_html =
-                    render_footnote_continuation(&continuation_content, hardbreaks);
-                result_lines.push(format!(
-                    "<blockquote id=\"fn_{}\"><sup>{}</sup>. {}{}</blockquote>\n{}",
-                    number, number, first_line_resolved, return_link, continuation_html
-                ));
-            }
-        } else {
+        if fence.is_code_line(line) {
             result_lines.push(line.to_string());
+            continue;
+        }
+
+        // Check if this line starts a footnote definition [^n]:
+        let Some((number, first_line_content)) = parse_footnote_def_start(line) else {
+            result_lines.push(line.to_string());
+            continue;
+        };
+
+        // Collect continuation lines (indented or list items until next footnote/heading/blank)
+        let mut continuation_lines: Vec<&str> = Vec::new();
+        while i < lines.len() {
+            let next_line = lines[i];
+            let trimmed = next_line.trim_start();
+
+            // Stop if: empty line, new footnote, heading (a fenced code block runs to its fence)
+            if !fence.is_open()
+                && (trimmed.is_empty()
+                    || (trimmed.starts_with("[^") && trimmed.contains("]:"))
+                    || trimmed.starts_with('#'))
+            {
+                break;
+            }
+
+            fence.is_code_line(next_line);
+            continuation_lines.push(next_line);
             i += 1;
+        }
+
+        // Blank lines keep the placeholders in a paragraph of their own
+        result_lines.push(String::new());
+        result_lines.push(format!(
+            "%%FNDEF_OPEN_{}%%{}%%FNDEF_CLOSE_{}%%",
+            number,
+            first_line_content.trim_end(),
+            number
+        ));
+        result_lines.push(String::new());
+        if !continuation_lines.is_empty() {
+            result_lines.extend(dedent_lines(&continuation_lines));
+            result_lines.push(String::new());
         }
     }
 
     result_lines.join("\n")
+}
+
+/// Remove the indentation the lines have in common, preserving relative structure
+fn dedent_lines(lines: &[&str]) -> Vec<String> {
+    let min_indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+
+    lines
+        .iter()
+        .map(|line| {
+            line.get(min_indent..)
+                .unwrap_or(line.trim_start())
+                .to_string()
+        })
+        .collect()
 }
 
 /// Convert footnote references [^n] to placeholder (before parsing)
@@ -475,33 +580,14 @@ fn convert_footnote_definitions_inline(content: &str, hardbreaks: bool) -> Strin
 /// the regex character class `[^abc]` is not turned into a footnote reference.
 fn convert_footnote_references_to_placeholder(content: &str) -> String {
     let mut result = String::new();
-    // (fence_char, fence_length) while inside a fenced code block
-    let mut in_fence: Option<(char, usize)> = None;
+    let mut fence = FenceTracker::default();
 
     for line in content.lines() {
-        let trimmed = line.trim_start();
-
-        if let Some((fence_char, fence_len)) = in_fence {
-            // Closing fence: a run of the same char, at least as long, alone on the line
-            let run = trimmed.chars().take_while(|&c| c == fence_char).count();
-            if run >= fence_len && trimmed.trim_end().chars().all(|c| c == fence_char) {
-                in_fence = None;
-            }
+        if fence.is_code_line(line) {
             result.push_str(line);
-            result.push('\n');
-            continue;
+        } else {
+            result.push_str(&convert_footnote_refs_in_line(line));
         }
-
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let fence_char = trimmed.chars().next().unwrap();
-            let fence_len = trimmed.chars().take_while(|&c| c == fence_char).count();
-            in_fence = Some((fence_char, fence_len));
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-
-        result.push_str(&convert_footnote_refs_in_line(line));
         result.push('\n');
     }
 
@@ -601,23 +687,57 @@ fn convert_footnote_refs_in_text(content: &str) -> String {
 
 /// Convert footnote placeholders to HTML (after markdown parsing)
 fn convert_footnote_placeholders_to_html(html: &str) -> String {
-    let mut result = html.to_string();
-    // Find all %%FNREF_n%% patterns and replace with HTML
-    let re_pattern = "%%FNREF_";
-    while let Some(start) = result.find(re_pattern) {
-        let after_prefix = &result[start + re_pattern.len()..];
-        if let Some(end) = after_prefix.find("%%") {
-            let number = &after_prefix[..end];
-            let replacement = format!(
-                "<sup><a href=\"#fn_{}\" id=\"reffn_{}\">{}</a></sup>",
-                number, number, number
-            );
-            let full_placeholder = format!("%%FNREF_{}%%", number);
-            result = result.replacen(&full_placeholder, &replacement, 1);
-        } else {
+    // A definition's first line is a paragraph of its own: the blockquote replaces the <p>.
+    // Use blockquote to match HonKit styling (left border)
+    let html = replace_delimited(html, "<p>%%FNDEF_OPEN_", "%%", |number| {
+        format!("<blockquote id=\"fn_{}\"><sup>{}</sup>. ", number, number)
+    });
+    let html = replace_delimited(&html, "%%FNDEF_CLOSE_", "%%</p>", |number| {
+        format!(
+            "<a href=\"#reffn_{}\" title=\"Jump back to footnote [{}] in the text.\"> ↩</a></blockquote>",
+            number, number
+        )
+    });
+    // Nothing is parsed inside a raw HTML block (<pre>, a comment): give the source back
+    let html = replace_delimited(&html, "%%FNDEF_OPEN_", "%%", |number| {
+        format!("[^{}]: ", number)
+    });
+    let html = replace_delimited(&html, "%%FNDEF_CLOSE_", "%%", |_| String::new());
+    replace_delimited(&html, "%%FNREF_", "%%", |number| {
+        format!(
+            "<sup><a href=\"#fn_{}\" id=\"reffn_{}\">{}</a></sup>",
+            number, number, number
+        )
+    })
+}
+
+/// Replace every prefix + name + suffix in the text with render(name)
+fn replace_delimited(
+    text: &str,
+    prefix: &str,
+    suffix: &str,
+    render: impl Fn(&str) -> String,
+) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some(start) = rest.find(prefix) {
+        let after_prefix = &rest[start + prefix.len()..];
+        let Some(end) = after_prefix.find(suffix) else {
             break;
+        };
+        // The suffix found belongs to a later placeholder: this one has another suffix
+        if after_prefix[..end].contains("%%") {
+            result.push_str(&rest[..start + prefix.len()]);
+            rest = after_prefix;
+            continue;
         }
+        result.push_str(&rest[..start]);
+        result.push_str(&render(&after_prefix[..end]));
+        rest = &after_prefix[end + suffix.len()..];
     }
+
+    result.push_str(rest);
     result
 }
 
@@ -638,133 +758,67 @@ fn parse_footnote_def_start(line: &str) -> Option<(&str, &str)> {
     Some((number, rest))
 }
 
-/// Render footnote continuation content (lists, paragraphs after first line)
-fn render_footnote_continuation(content: &str, hardbreaks: bool) -> String {
-    // Find minimum indentation (excluding empty lines) to preserve relative indentation
-    let min_indent = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.len() - line.trim_start().len())
-        .min()
-        .unwrap_or(0);
-
-    // Remove only the common leading indentation, preserving relative structure
-    let dedented: String = content
-        .lines()
-        .map(|line| {
-            if line.len() >= min_indent {
-                &line[min_indent..]
-            } else {
-                line.trim_start()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-
-    let parser = Parser::new_ext(&dedented, options);
-
-    // Apply hardbreaks conversion if enabled
-    let events: Vec<Event> = parser
-        .map(|event| {
-            if hardbreaks {
-                match event {
-                    Event::SoftBreak => Event::HardBreak,
-                    _ => event,
-                }
-            } else {
-                event
-            }
-        })
-        .collect();
-
-    let mut html = String::new();
-    html::push_html(&mut html, events.into_iter());
-
-    html.trim().to_string()
-}
-
-/// Fix multi-line footnotes without proper indentation
-/// Adds 4 spaces to ALL continuation lines to preserve relative indentation structure
-fn fix_multiline_footnotes(content: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::new();
-    let mut in_footnote = false;
-
-    for line in lines {
-        // Check if this line starts a new footnote definition
-        if line.starts_with("[^") && line.contains("]:") {
-            in_footnote = true;
-            result.push(line.to_string());
-        } else if in_footnote {
-            let trimmed = line.trim_start();
-
-            if trimmed.is_empty() {
-                // Empty line ends the footnote
-                in_footnote = false;
-                result.push(line.to_string());
-            } else if trimmed.starts_with("[^") && trimmed.contains("]:") {
-                // New footnote starts
-                in_footnote = true;
-                result.push(line.to_string());
-            } else if trimmed.starts_with('#') {
-                // Heading starts - end of footnotes section
-                in_footnote = false;
-                result.push(line.to_string());
-            } else {
-                // Continuation line - add 4 spaces to ALL lines to preserve relative structure
-                result.push(format!("    {}", line));
-            }
-        } else {
-            result.push(line.to_string());
-        }
-    }
-
-    result.join("\n")
-}
-
 /// Fix malformed table rows:
 /// - Add missing trailing | to header rows
 /// - Fix separator rows where column count doesn't match header
+/// - Widen the header to the widest row (a table drops the cells beyond its
+///   header; HonKit keeps them)
 fn fix_table_separator_columns(content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let mut result = Vec::new();
+    let mut fence = FenceTracker::default();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
-        let trimmed = line.trim();
 
-        // Check if this line looks like a table row (starts with |)
-        if trimmed.starts_with('|') {
-            // Check if next line is a separator row
-            if i + 1 < lines.len() {
-                let next_line = lines[i + 1];
-                if is_table_separator_row(next_line) {
-                    // This is a header row - fix missing trailing pipe if needed
-                    let fixed_header = fix_table_row_trailing_pipe(line);
-                    let header_cols = count_table_columns(&fixed_header);
+        if fence.is_code_line(line) {
+            result.push(line.to_string());
+            i += 1;
+            continue;
+        }
 
-                    let separator_cols = count_table_columns(next_line);
+        // A table starts at a row (starts with |) followed by a separator row
+        if line.trim().starts_with('|')
+            && lines.get(i + 1).is_some_and(|l| is_table_separator_row(l))
+        {
+            let separator = lines[i + 1];
+            let fixed_header = fix_table_row_trailing_pipe(line);
+            let header_cols = count_table_columns(&fixed_header);
+            let separator_cols = count_table_columns(separator);
 
-                    // Push the fixed header
-                    result.push(fixed_header);
-                    i += 1;
+            let body_rows = lines[i + 2..]
+                .iter()
+                .take_while(|row| row.trim().starts_with('|'))
+                .count();
+            let widest_row = lines[i + 2..i + 2 + body_rows]
+                .iter()
+                .map(|row| count_filled_table_columns(row))
+                .max()
+                .unwrap_or(0);
+            let cols = header_cols.max(widest_row);
 
-                    // If column counts don't match, fix the separator row
-                    if header_cols > 0 && separator_cols != header_cols {
-                        let fixed_separator = generate_separator_row(header_cols, next_line);
-                        result.push(fixed_separator);
-                    } else {
-                        result.push(next_line.to_string());
-                    }
-                    i += 1;
-                    continue;
-                }
+            // An empty cell for each column the header is short of
+            result.push(format!(
+                "{}{}",
+                fixed_header,
+                "|".repeat(cols - header_cols)
+            ));
+
+            // If column counts don't match, fix the separator row
+            if cols > 0 && separator_cols != cols {
+                let indent = &separator[..separator.len() - separator.trim_start().len()];
+                result.push(format!(
+                    "{}{}",
+                    indent,
+                    generate_separator_row(cols, separator)
+                ));
+            } else {
+                result.push(separator.to_string());
             }
+
+            i += 2;
+            continue;
         }
 
         result.push(line.to_string());
@@ -784,18 +838,41 @@ fn fix_table_row_trailing_pipe(line: &str) -> String {
     }
 }
 
-/// Count the number of columns in a table row
-fn count_table_columns(line: &str) -> usize {
-    let trimmed = line.trim();
-    if !trimmed.starts_with('|') {
-        return 0;
+/// Split a table row into its cells. An escaped pipe does not separate cells, and the
+/// trailing pipe is optional.
+fn table_cells(line: &str) -> Vec<&str> {
+    let Some(row) = line.trim().strip_prefix('|') else {
+        return Vec::new();
+    };
+
+    let mut cells = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (i, c) in row.char_indices() {
+        if c == '|' && !escaped {
+            cells.push(&row[start..i]);
+            start = i + 1;
+        }
+        escaped = c == '\\' && !escaped;
+    }
+    if start < row.len() {
+        cells.push(&row[start..]);
     }
 
-    // Count the | characters, accounting for leading/trailing pipes
-    let pipe_count = trimmed.chars().filter(|&c| c == '|').count();
+    cells
+}
 
-    // Number of columns = pipes - 1 (for |col1|col2|col3| format)
-    pipe_count.saturating_sub(1)
+/// Count the number of columns in a table row
+fn count_table_columns(line: &str) -> usize {
+    table_cells(line).len()
+}
+
+/// Count the columns of a table row up to its last cell with content
+fn count_filled_table_columns(line: &str) -> usize {
+    table_cells(line)
+        .iter()
+        .rposition(|cell| !cell.trim().is_empty())
+        .map_or(0, |last| last + 1)
 }
 
 /// Check if a line is a table separator row (contains only |, -, :, and whitespace)
@@ -854,37 +931,109 @@ fn generate_separator_row(col_count: usize, original: &str) -> String {
     format!("|{}|", cols.join("|"))
 }
 
-/// Fix full-width spaces after heading markers (common mistake in Japanese documents)
-/// Converts "##　見出し" to "## 見出し"
-fn fix_fullwidth_heading_spaces(content: &str) -> String {
+/// Fix the space after heading markers (common mistakes in Japanese documents):
+/// - Full-width: converts "##　見出し" to "## 見出し"
+/// - Missing: converts "##見出し" to "## 見出し" (HonKit does not need the space)
+///
+/// A missing space is only fixed when text can follow, so that the mask
+/// "####-####-####" stays literal, and not on lines indented like a code block.
+fn fix_heading_marker_spaces(content: &str) -> String {
+    let mut fence = FenceTracker::default();
+
     content
         .lines()
         .map(|line| {
-            // Check if line starts with heading markers followed by full-width space
-            let trimmed = line.trim_start();
-            if trimmed.starts_with('#') {
-                // Find where the # sequence ends
-                let hash_count = trimmed.chars().take_while(|&c| c == '#').count();
-                if hash_count > 0 && hash_count <= 6 {
-                    let after_hashes = &trimmed[hash_count..];
-                    // Check if followed by full-width space (U+3000)
-                    if after_hashes.starts_with('\u{3000}') {
-                        // Replace full-width space with half-width space
-                        let leading_whitespace = &line[..line.len() - trimmed.len()];
-                        let rest = &after_hashes['\u{3000}'.len_utf8()..];
-                        return format!(
-                            "{}{} {}",
-                            leading_whitespace,
-                            "#".repeat(hash_count),
-                            rest
-                        );
-                    }
-                }
+            if fence.is_code_line(line) {
+                return line.to_string();
             }
+
+            let trimmed = line.trim_start();
+            let hash_count = trimmed.chars().take_while(|&c| c == '#').count();
+            if !(1..=6).contains(&hash_count) {
+                return line.to_string();
+            }
+
+            let leading_whitespace = &line[..line.len() - trimmed.len()];
+            let after_hashes = &trimmed[hash_count..];
+            let marker = "#".repeat(hash_count);
+
+            if let Some(rest) = after_hashes.strip_prefix('\u{3000}') {
+                return format!("{}{} {}", leading_whitespace, marker, rest);
+            }
+
+            let starts_text = after_hashes.chars().next().is_some_and(|c| {
+                !c.is_whitespace() && (c.is_alphanumeric() || !c.is_ascii() || "[(*_`<".contains(c))
+            });
+            if starts_text && leading_whitespace.len() <= 3 {
+                return format!("{}{} {}", leading_whitespace, marker, after_hashes);
+            }
+
             line.to_string()
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Keep only the last definition of each reference label: HonKit lets the last one
+/// win, CommonMark the first.
+fn keep_last_reference_definitions(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut fence = FenceTracker::default();
+    let mut in_html_comment = false;
+    let mut last_definition = std::collections::HashMap::new();
+    let mut labels: Vec<Option<String>> = Vec::with_capacity(lines.len());
+
+    for (i, line) in lines.iter().enumerate() {
+        let mut label = None;
+        if in_html_comment {
+            in_html_comment = !line.contains("-->");
+        } else if !fence.is_code_line(line) {
+            if let Some(start) = line.find("<!--") {
+                in_html_comment = !line[start..].contains("-->");
+            }
+            label = reference_definition_label(line);
+        }
+        if let Some(label) = &label {
+            last_definition.insert(label.clone(), i);
+        }
+        labels.push(label);
+    }
+
+    lines
+        .iter()
+        .zip(&labels)
+        .enumerate()
+        .filter(|(i, (_, label))| label.as_ref().is_none_or(|l| last_definition[l] == *i))
+        .map(|(_, (line, _))| *line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The normalized label if the line is a reference definition ("[label]: url")
+fn reference_definition_label(line: &str) -> Option<String> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+
+    let rest = line[indent..].strip_prefix('[')?;
+    // Footnote definitions look the same
+    if rest.starts_with('^') {
+        return None;
+    }
+
+    let (label, destination) = rest.split_once("]:")?;
+    if label.trim().is_empty() || label.contains(['[', ']']) || destination.trim().is_empty() {
+        return None;
+    }
+
+    Some(
+        label
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase(),
+    )
 }
 
 /// Fix image paths that contain spaces by wrapping them in angle brackets
@@ -1753,31 +1902,6 @@ sequenceDiagram
     }
 
     #[test]
-    fn test_fix_multiline_footnotes_preprocessing() {
-        let input = r#"[^1]: First line
-- Second line
-- Third line
-[^2]: Another"#;
-        let output = fix_multiline_footnotes(input);
-        println!("Preprocessed:\n{}", output);
-        assert!(
-            output.contains("    - Second line"),
-            "Second line should be indented: {}",
-            output
-        );
-        assert!(
-            output.contains("    - Third line"),
-            "Third line should be indented: {}",
-            output
-        );
-        assert!(
-            !output.contains("    [^2]"),
-            "New footnote should not be indented: {}",
-            output
-        );
-    }
-
-    #[test]
     fn test_slugify_matches_github_slugger() {
         // Test that slugify matches github-slugger / HonKit behavior
         // Special characters like / should be removed, not converted to hyphens
@@ -2069,14 +2193,20 @@ fn test_reference_link_with_bom() {
 
 #[test]
 fn test_footnote_with_list() {
-    let content = "- データソース項目の値\n- 上記以外の場合";
-    let html = render_footnote_continuation(content, false);
-    println!("Footnote continuation HTML: {}", html);
+    let html = render_markdown("本文[^1]\n\n[^1]: 見出し\n- 項目1\n- 項目2\n\n後ろの段落");
     assert!(
-        html.contains("<li>") && html.contains("<ul>"),
+        html.contains("<ul>") && html.contains("<li>項目1</li>") && html.contains("<li>項目2</li>"),
         "Should contain list: {}",
         html
     );
+    let blockquote_end = html.find("</blockquote>").expect("no blockquote");
+    let list = html.find("<ul>").expect("no list");
+    assert!(
+        blockquote_end < list,
+        "The list should follow the first line: {}",
+        html
+    );
+    assert!(html.contains("<p>後ろの段落</p>"), "{}", html);
 }
 
 #[test]
@@ -2089,9 +2219,10 @@ fn test_full_reference_link_in_footnote() {
 [決済方法申込状態]:#決済方法申込状態"#;
     let html = render_markdown(md);
     println!("Full reference link in footnote: {}", html);
-    // The [未申込] should become a link with href="#決済方法申込状態"
+    // The [未申込] should become a link to #決済方法申込状態. The href is percent-encoded
+    // like any other link in the document, which a browser resolves the same way.
     assert!(
-        html.contains("<a href=\"#決済方法申込状態\">未申込</a>"),
+        html.contains("<a href=\"#%E6%B1%BA%E6%B8%88") && html.contains(">未申込</a>"),
         "Full reference link [text][ref] should be resolved: {}",
         html
     );
@@ -2100,30 +2231,6 @@ fn test_full_reference_link_in_footnote() {
         html.contains("の場合:"),
         "Text after reference link should be preserved: {}",
         html
-    );
-}
-
-#[test]
-fn test_resolve_reference_links_full_style() {
-    // Direct test of resolve_reference_links function with [text][ref] pattern
-    let mut refs = std::collections::HashMap::new();
-    refs.insert(
-        "決済方法申込状態".to_lowercase(),
-        "#決済方法申込状態".to_string(),
-    );
-
-    let input = "[未申込][決済方法申込状態]の場合";
-    let output = resolve_reference_links(input, &refs);
-    println!("Resolved: {}", output);
-    assert!(
-        output.contains("<a href=\"#決済方法申込状態\">未申込</a>"),
-        "Should resolve [text][ref]: {}",
-        output
-    );
-    assert!(
-        output.contains("の場合"),
-        "Text after link should be preserved: {}",
-        output
     );
 }
 
@@ -2143,6 +2250,318 @@ fn test_multilang_relative_links() {
     assert!(
         html.contains("href=\"repositories/docs-path.html\""),
         "Should preserve relative link: {}",
+        html
+    );
+}
+
+#[test]
+fn test_footnote_reference_style_images() {
+    let md = "本文[^1]\n\n[^1]: ![][icon] の説明\n- ![][icon]\n- ![代替][icon]\n- ![icon]\n\n[icon]: images/icon.png\n";
+    let html = render_markdown(md);
+    assert_eq!(
+        html.matches("<img src=\"images/icon.png\"").count(),
+        4,
+        "Every reference-style image should be an <img>: {}",
+        html
+    );
+    assert!(html.contains("alt=\"代替\""), "{}", html);
+    assert!(
+        !html.contains("!<a"),
+        "An image should not become a link: {}",
+        html
+    );
+    assert!(!html.contains("%%FN"), "{}", html);
+}
+
+#[test]
+fn test_footnote_first_line_inline_formatting() {
+    let html = render_markdown("本文[^1]\n\n[^1]: `code` と **太字** と [リンク](other.md)\n");
+    assert!(
+        html.contains("<blockquote id=\"fn_1\"><sup>1</sup>. <code>code</code>"),
+        "{}",
+        html
+    );
+    assert!(html.contains("<strong>太字</strong>"), "{}", html);
+    assert!(html.contains("href=\"other.html\""), "{}", html);
+    assert!(
+        html.contains(
+            "<a href=\"#reffn_1\" title=\"Jump back to footnote [1] in the text.\"> ↩</a></blockquote>"
+        ),
+        "The back link should close the blockquote: {}",
+        html
+    );
+    assert!(
+        !html.contains("<p><blockquote") && !html.contains("</blockquote></p>"),
+        "The blockquote should replace the paragraph: {}",
+        html
+    );
+    assert!(!html.contains("%%FN"), "{}", html);
+}
+
+#[test]
+fn test_footnote_first_line_ending_with_url() {
+    let html = render_markdown("本文[^1]\n\n[^1]: 参照先 https://example.com/page\n");
+    assert!(
+        html.contains(
+            "<a href=\"https://example.com/page\" target=\"_blank\">https://example.com/page</a><a href=\"#reffn_1\""
+        ),
+        "The URL should end before the back link: {}",
+        html
+    );
+    assert!(!html.contains("%%FN"), "{}", html);
+}
+
+#[test]
+fn test_footnote_reference_right_after_url() {
+    let html = render_markdown("https://example.com/page[^1] の続き\n\n[^1]: 脚注\n");
+    assert!(
+        html.contains(
+            "<a href=\"https://example.com/page\" target=\"_blank\">https://example.com/page</a><sup><a href=\"#fn_1\""
+        ),
+        "The URL should end before the reference: {}",
+        html
+    );
+    assert!(!html.contains("%%FN"), "{}", html);
+}
+
+#[test]
+fn test_footnote_definition_in_raw_html_block() {
+    // A comment or <pre> is not parsed: what looks like a definition stays as written
+    // and does not reach for the end of the next real definition
+    let md = "<!--\n[^8]: コメントの中\n-->\n\n本文A\n\n<pre>\n[^9]: pre の中\n</pre>\n\n本文B\n\n[^1]: 本物\n\n本文C\n";
+    let html = render_markdown(md);
+    assert!(html.contains("[^8]: コメントの中"), "{}", html);
+    assert!(html.contains("[^9]: pre の中"), "{}", html);
+    for text in ["本文A", "本文B", "本文C"] {
+        assert_eq!(
+            html.matches(&format!("<p>{}</p>", text)).count(),
+            1,
+            "{} should appear once: {}",
+            text,
+            html
+        );
+    }
+    assert!(
+        html.contains("<blockquote id=\"fn_1\"><sup>1</sup>. 本物<a href=\"#reffn_1\""),
+        "{}",
+        html
+    );
+    assert_eq!(html.matches("<blockquote").count(), 1, "{}", html);
+    assert!(!html.contains("%%FN"), "{}", html);
+}
+
+#[test]
+fn test_footnote_definition_in_fenced_code_not_converted() {
+    let html = render_markdown("```\n[^1]: コードの中\n```\n");
+    assert!(html.contains("[^1]: コードの中"), "{}", html);
+    assert!(!html.contains("<blockquote"), "{}", html);
+    assert!(!html.contains("%%FN"), "{}", html);
+}
+
+#[test]
+fn test_footnote_continuation_with_fenced_code() {
+    // A blank line inside the fence does not end the footnote, and the fence is code
+    let html = render_markdown("[^1]: 見出し\n```\n[^2]: コードの中\n\n続き\n```\n");
+    assert!(
+        html.contains("<pre><code>[^2]: コードの中\n\n続き\n</code></pre>"),
+        "{}",
+        html
+    );
+    assert_eq!(html.matches("<blockquote").count(), 1, "{}", html);
+}
+
+#[test]
+fn test_single_tilde_stays_literal() {
+    let html = render_markdown("0 ~100 と 0~ 100");
+    assert!(html.contains("<p>0 ~100 と 0~ 100</p>"), "{}", html);
+    assert!(!html.contains("<del>"), "{}", html);
+
+    let html = render_markdown("~a **b** c~");
+    assert!(html.contains("<p>~a <strong>b</strong> c~</p>"), "{}", html);
+}
+
+#[test]
+fn test_double_tilde_strikes_through() {
+    let html = render_markdown("~~取り消し~~ と 0~ 100");
+    assert!(html.contains("<del>取り消し</del> と 0~ 100"), "{}", html);
+}
+
+#[test]
+fn test_single_tilde_in_code_is_untouched() {
+    let html = render_markdown("`~a~`\n\n```\n~b~\n```\n");
+    assert!(html.contains("<code>~a~</code>"), "{}", html);
+    assert!(html.contains("~b~\n</code></pre>"), "{}", html);
+    assert!(!html.contains("<del>"), "{}", html);
+}
+
+#[test]
+fn test_single_tilde_in_toc() {
+    let md = "## 0 ~100 と 0~ 100\n";
+    let toc = extract_headings(md);
+    assert_eq!(toc[0].text, "0 ~100 と 0~ 100");
+    let html = render_markdown(md);
+    assert!(
+        html.contains(&format!("<h2 id=\"{}\">", toc[0].id)),
+        "TOC id {} should match the heading: {}",
+        toc[0].id,
+        html
+    );
+}
+
+#[test]
+fn test_heading_without_space() {
+    let md = "##見出し\n\n###[リンク](other.md)\n\n##Title\n\n```\n##コードの中\n```\n";
+    let html = render_markdown(md);
+    assert!(html.contains("<h2 id=\"見出し\">見出し</h2>"), "{}", html);
+    assert!(html.contains("<h3 id=\"リンク\">"), "{}", html);
+    assert!(html.contains("<h2 id=\"title\">Title</h2>"), "{}", html);
+    assert!(
+        html.contains("<pre><code>##コードの中\n</code></pre>"),
+        "A fence should be left alone: {}",
+        html
+    );
+
+    let toc = extract_headings(md);
+    let texts: Vec<&str> = toc.iter().map(|item| item.text.as_str()).collect();
+    assert_eq!(texts, ["見出し", "リンク", "Title"]);
+}
+
+#[test]
+fn test_hashes_that_are_not_headings_stay_literal() {
+    let html = render_markdown("####-####-####\n\n#######七個\n\n    ##字下げ\n");
+    assert!(html.contains("<p>####-####-####</p>"), "{}", html);
+    assert!(html.contains("<p>#######七個</p>"), "{}", html);
+    assert!(html.contains("<pre><code>##字下げ"), "{}", html);
+    assert!(!html.contains("<h"), "{}", html);
+    assert!(extract_headings("####-####-####\n\n#######七個\n").is_empty());
+}
+
+#[test]
+fn test_last_reference_definition_wins() {
+    let html = render_markdown("[リンク]\n\n[リンク]: first.html\n\n[リンク]: last.html\n");
+    assert!(
+        html.contains("<a href=\"last.html\">リンク</a>"),
+        "{}",
+        html
+    );
+    assert!(!html.contains("first.html"), "{}", html);
+
+    // Labels match regardless of case and spacing, and images follow the same rule
+    let html =
+        render_markdown("![代替][Foo  Bar]\n\n[foo bar]: first.png\n\n[FOO BAR]: last.png\n");
+    assert!(html.contains("<img src=\"last.png\""), "{}", html);
+}
+
+#[test]
+fn test_reference_definition_in_comment_or_fence_does_not_win() {
+    let md = "[リンク]\n\n[リンク]: real.html\n\n<!--\n[リンク]: comment.html\n-->\n\n```\n[リンク]: code.html\n```\n";
+    let html = render_markdown(md);
+    assert!(
+        html.contains("<a href=\"real.html\">リンク</a>"),
+        "{}",
+        html
+    );
+    assert!(
+        html.contains("[リンク]: code.html"),
+        "A fence should be left alone: {}",
+        html
+    );
+}
+
+#[test]
+fn test_bold_next_to_non_ascii_letter() {
+    let html = render_markdown("これは__太字__です");
+    assert!(
+        html.contains("<p>これは<strong>太字</strong>です</p>"),
+        "{}",
+        html
+    );
+
+    // Only the word after the closing delimiter is non-ASCII
+    let html = render_markdown("Set __color__của item");
+    assert!(
+        html.contains("<p>Set <strong>color</strong>của item</p>"),
+        "{}",
+        html
+    );
+
+    // Twice in a line, and in a heading
+    let html = render_markdown("一つ__目__と二つ__目__です");
+    assert_eq!(html.matches("<strong>目</strong>").count(), 2, "{}", html);
+    let toc = extract_headings("## これは__太字__です\n");
+    assert_eq!(toc[0].text, "これは太字です");
+}
+
+#[test]
+fn test_double_underscore_in_ascii_word_stays_literal() {
+    for text in ["SOME__NAME__HERE", "__init__py", "name__suffix__.txt"] {
+        let html = render_markdown(text);
+        assert!(html.contains(&format!("<p>{}</p>", text)), "{}", html);
+    }
+    // Bold in CommonMark too
+    let html = render_markdown("__init__");
+    assert!(html.contains("<strong>init</strong>"), "{}", html);
+}
+
+#[test]
+fn test_double_underscore_in_url_stays_literal() {
+    let html = render_markdown("https://example.com/資料__a__b");
+    assert!(html.contains("__a__b"), "{}", html);
+    assert!(!html.contains("<strong>"), "{}", html);
+}
+
+#[test]
+fn test_double_underscore_in_code_or_escaped_stays_literal() {
+    let html = render_markdown("`これは__太字__です`");
+    assert!(html.contains("<code>これは__太字__です</code>"), "{}", html);
+
+    let html = render_markdown("```\nこれは__太字__です\n```\n");
+    assert!(
+        html.contains("これは__太字__です\n</code></pre>"),
+        "{}",
+        html
+    );
+
+    let html = render_markdown("これは\\_\\_太字\\_\\_です");
+    assert!(html.contains("<p>これは__太字__です</p>"), "{}", html);
+
+    let html = render_markdown("![これは__太字__です](image.png)");
+    assert!(html.contains("alt=\"これは__太字__です\""), "{}", html);
+}
+
+#[test]
+fn test_table_row_wider_than_header_keeps_its_cells() {
+    let html = render_markdown("| A | B |\n|:--|--:|\n| 1 | 2 | 余り |\n| 3 | 4 |\n");
+    assert!(html.contains("<td>余り</td>"), "{}", html);
+    assert_eq!(html.matches("</th>").count(), 3, "{}", html);
+    assert!(
+        html.contains("<th style=\"text-align: left\">A</th>")
+            && html.contains("<th style=\"text-align: right\">B</th>"),
+        "The alignment should be kept: {}",
+        html
+    );
+}
+
+#[test]
+fn test_table_row_with_empty_extra_cell_does_not_widen() {
+    let html = render_markdown("| A | B |\n|---|---|\n| 1 | 2 | |\n");
+    assert_eq!(html.matches("</th>").count(), 2, "{}", html);
+}
+
+#[test]
+fn test_table_escaped_pipe_is_not_a_column() {
+    let html = render_markdown("| A | B |\n|---|---|\n| 1 \\| 2 | 3 |\n");
+    assert_eq!(html.matches("</th>").count(), 2, "{}", html);
+    assert!(html.contains("<td>1 | 2</td>"), "{}", html);
+}
+
+#[test]
+fn test_table_in_fenced_code_is_not_widened() {
+    let md = "```\n| A |\n|---|\n| 1 | 2 |\n```\n";
+    let html = render_markdown(md);
+    assert!(
+        html.contains("| A |\n|---|\n| 1 | 2 |\n</code></pre>"),
+        "{}",
         html
     );
 }

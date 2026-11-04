@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- HonKit compatibility, footnotes: the lines after a footnote's first line are rendered with the rest of the document, so reference-style images and links work there (`![][label]` no longer turned into `!<a href=""></a>`, a definition right after a footnote is no longer swallowed, a fenced block may contain blank lines). The first line's inline formatting (`` `code` ``, `**bold**`, links) is rendered instead of shown as is
+- Footnotes: a URL right before a footnote reference no longer swallows it (broken `<a>`). A line that looks like a definition inside an HTML comment or `<pre>` is left as written (it used to close the comment early and expose the rest of the page)
+- HonKit compatibility, strikethrough: a single `~` stays literal (`0 ~100 and 0~ 100`), only `~~text~~` strikes through, in the TOC too
+- HonKit compatibility, headings: `##Heading` without a space is a heading, in the TOC too. Masks like `####-####` and lines indented as code stay literal
+- HonKit compatibility, reference definitions: when a label is defined twice, the last definition wins (definitions in comments and code do not count)
+- HonKit compatibility, bold: `__bold__` touching a letter is bold when non-ASCII text is involved (`これは__太字__です`). ASCII identifiers (`SOME__NAME__HERE`), URLs, code and `\_\_` stay literal
+- HonKit compatibility, tables: cells beyond the header are kept by widening the header and the separator to the widest row with content (they used to be dropped)
 - Favicon: the build now actually emits `gitbook/images/favicon.ico` / apple-touch-icon (previously only linked, always 404) and content pages link them with the depth-aware root path
 - Front matter: a `----` line no longer closes the front matter early (closing delimiter must be exactly `---`); UTF-8 BOM-prefixed files keep their front matter
 - Glossary: a `>` inside a quoted attribute value no longer breaks the tag tracker (spans were injected into attributes); `class="no-glossary"` on void/self-closing elements (`<img/>` etc.) no longer disables the glossary for the rest of the page
