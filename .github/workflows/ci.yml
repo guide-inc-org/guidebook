@@ -14,7 +14,7 @@ jobs:
     name: Check, Test & Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       # @master, not @stable: upstream rebuilds @stable on top of master at every
       # master update, so a commit locked from @stable drops out of that branch's
@@ -45,7 +45,7 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -57,7 +57,7 @@ jobs:
     name: Parser & Security Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       # @master, not @stable: see the note on the check job
       - name: Install Rust toolchain
