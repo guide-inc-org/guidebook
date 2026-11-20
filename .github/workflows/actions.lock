@@ -16,7 +16,7 @@ workflows:
         - 'actions/checkout@v4.4.0'
         - 'actions/download-artifact@v4.3.0'
         - 'actions/upload-artifact@v4.6.2'
-        - 'softprops/action-gh-release@v1'
+        - 'softprops/action-gh-release@v3'
 dependencies:
     'actions/checkout@v4.4.0':
         ref: 'v4.4.0'
@@ -60,9 +60,9 @@ dependencies:
         commit: 'sha1-683b588c487a69d01f6c6ddf40f036ff682cc2c8'
         owner_id: 1940490
         repo_id: 260749683
-    'softprops/action-gh-release@v1':
-        ref: 'v1'
-        commit: 'sha1-de2c0eb89ae2a093876385947365aca7b0e5f844'
+    'softprops/action-gh-release@v3':
+        ref: 'v3'
+        commit: 'sha1-efb35369e0ad2afab669f228072c1b0d510eae64'
         owner_id: 2242
         repo_id: 204253808
     'swatinem/rust-cache@v2.9.3':
