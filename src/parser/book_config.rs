@@ -17,6 +17,10 @@ pub struct BookConfig {
     #[serde(default)]
     pub title: String,
 
+    /// Content language of the pages, used as the HTML `lang` attribute
+    #[serde(default)]
+    pub language: Option<String>,
+
     #[serde(default)]
     pub plugins: Vec<String>,
 
@@ -208,6 +212,20 @@ mod tests {
         let json = r#"{"title": "Test"}"#;
         let config: BookConfig = serde_json::from_str(json).unwrap();
         assert!(config.variables.is_empty());
+    }
+
+    #[test]
+    fn test_language() {
+        let json = r#"{"title": "Test", "language": "fr"}"#;
+        let config: BookConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.language.as_deref(), Some("fr"));
+    }
+
+    #[test]
+    fn test_language_unset_by_default() {
+        let json = r#"{"title": "Test"}"#;
+        let config: BookConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.language, None);
     }
 
     #[test]
