@@ -38,6 +38,11 @@ impl Templates {
         context.insert("book_title", &config.title);
         context.insert("content", content);
         context.insert("root_path", root_path);
+        let mut mermaid_config = serde_json::json!({ "startOnLoad": true });
+        if let (Some(options), Some(map)) = (&config.mermaid, mermaid_config.as_object_mut()) {
+            map.extend(options.clone());
+        }
+        context.insert("mermaid_config", &mermaid_config.to_string());
 
         // Check plugin features
         let collapsible = config.is_plugin_enabled("collapsible-chapters");
@@ -361,7 +366,7 @@ const PAGE_TEMPLATE: &str = r##"<!DOCTYPE html>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     {% if mermaid %}
     <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-    <script>mermaid.initialize({startOnLoad:true});</script>
+    <script>mermaid.initialize({{ mermaid_config | safe }});</script>
     {% endif %}
     {% if math %}
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">

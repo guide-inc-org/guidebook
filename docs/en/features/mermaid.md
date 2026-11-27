@@ -46,6 +46,16 @@ pie title Favorite Languages
     "Other" : 10
 ```
 
+## Theme
+
+Set Mermaid's theme in `book.json`:
+
+```json
+{
+    "mermaid": { "theme": "dark" }
+}
+```
+
 ## Disable Mermaid
 
 If you don't need Mermaid support:
