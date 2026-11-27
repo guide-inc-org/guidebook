@@ -1106,3 +1106,66 @@ fn test_summary_links_to_other_sites_open_there() {
     let next = page.find("page-nav next").unwrap();
     assert!(page[next..].contains("href=\"../a/next.html\""), "{}", page);
 }
+
+#[test]
+fn test_html_language_defaults_to_en() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    build_book(&source, &output);
+
+    let page = read_page(output.join("index.html"));
+    assert!(
+        page.contains("<html lang=\"en\" data-guidebook>"),
+        "{}",
+        page
+    );
+}
+
+#[test]
+fn test_html_language_from_book_json() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+    fs::write(
+        source.join("book.json"),
+        r#"{"title": "Test Book", "language": "fr"}"#,
+    )
+    .unwrap();
+
+    build_book(&source, &output);
+
+    let page = read_page(output.join("index.html"));
+    assert!(
+        page.contains("<html lang=\"fr\" data-guidebook>"),
+        "{}",
+        page
+    );
+}
+
+#[test]
+fn test_html_language_uses_lang_codes() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&source).unwrap();
+    create_multilang_book(&source);
+
+    build_book(&source, &output);
+
+    let en = read_page(output.join("en/index.html"));
+    assert!(en.contains("<html lang=\"en\" data-guidebook>"), "{}", en);
+    let ja = read_page(output.join("ja/index.html"));
+    assert!(ja.contains("<html lang=\"ja\" data-guidebook>"), "{}", ja);
+    let index = read_page(output.join("index.html"));
+    assert!(
+        index.contains("<html lang=\"en\" data-guidebook>"),
+        "{}",
+        index
+    );
+}

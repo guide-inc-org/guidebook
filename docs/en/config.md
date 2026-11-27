@@ -25,6 +25,7 @@ Create a `book.json` file in your book's root directory:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `title` | Book title | `"My Book"` |
+| `language` | Content language of pages, used as `<html lang>` | `"en"` |
 | `plugins` | Enabled plugins | See below |
 | `styles.website` | Custom CSS file | `null` |
 | `variables` | User-defined variables for `{{ book.xxx }}` | `{}` |
@@ -34,6 +35,8 @@ Create a `book.json` file in your book's root directory:
 | `inline_svg` | Inline SVG files into HTML | `false` |
 | `fetchRemoteImages` | Download remote images at build time | `false` |
 | `openapi` | OpenAPI/Swagger UI specification file | `null` |
+
+Pages use `language` as `<html lang>`. A book with `LANGS.md` uses each language's directory code unless that language has its own `book.json` with `language` set.
 
 ## Default Plugins
 

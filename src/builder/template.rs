@@ -38,6 +38,8 @@ impl Templates {
         context.insert("book_title", &config.title);
         context.insert("content", content);
         context.insert("root_path", root_path);
+        let language = config.language.as_deref().or(lang_prefix).unwrap_or("en");
+        context.insert("language", language);
 
         // Check plugin features
         let collapsible = config.is_plugin_enabled("collapsible-chapters");
@@ -343,7 +345,7 @@ fn generate_toc_html(items: &[TocItem]) -> String {
 }
 
 const PAGE_TEMPLATE: &str = r##"<!DOCTYPE html>
-<html lang="ja" data-guidebook>
+<html lang="{{ language }}" data-guidebook>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
