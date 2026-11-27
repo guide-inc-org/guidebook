@@ -25,6 +25,7 @@ Create a `book.json` file in your book's root directory:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `title` | Book title | `"My Book"` |
+| `mermaid` | Options passed to `mermaid.initialize()` | `{"startOnLoad": true}` |
 | `plugins` | Enabled plugins | See below |
 | `styles.website` | Custom CSS file | `null` |
 | `variables` | User-defined variables for `{{ book.xxx }}` | `{}` |
@@ -34,6 +35,21 @@ Create a `book.json` file in your book's root directory:
 | `inline_svg` | Inline SVG files into HTML | `false` |
 | `fetchRemoteImages` | Download remote images at build time | `false` |
 | `openapi` | OpenAPI/Swagger UI specification file | `null` |
+
+## Mermaid Options
+
+Set any [Mermaid initialization option](https://mermaid.js.org/config/setup/modules/mermaidAPI.html) in `book.json`:
+
+```json
+{
+    "mermaid": {
+        "theme": "dark",
+        "themeVariables": { "primaryTextColor": "#e6e6e6" }
+    }
+}
+```
+
+`startOnLoad` defaults to `true`; options you set override it.
 
 ## Default Plugins
 

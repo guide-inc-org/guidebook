@@ -17,6 +17,10 @@ pub struct BookConfig {
     #[serde(default)]
     pub title: String,
 
+    /// Options passed to `mermaid.initialize()`, merged over `startOnLoad: true`
+    #[serde(default)]
+    pub mermaid: Option<HashMap<String, serde_json::Value>>,
+
     #[serde(default)]
     pub plugins: Vec<String>,
 
@@ -208,6 +212,21 @@ mod tests {
         let json = r#"{"title": "Test"}"#;
         let config: BookConfig = serde_json::from_str(json).unwrap();
         assert!(config.variables.is_empty());
+    }
+
+    #[test]
+    fn test_mermaid_options() {
+        let json = r#"{"mermaid": {"theme": "dark", "startOnLoad": false}}"#;
+        let config: BookConfig = serde_json::from_str(json).unwrap();
+        let options = config.mermaid.unwrap();
+        assert_eq!(options["theme"].as_str(), Some("dark"));
+        assert_eq!(options["startOnLoad"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_mermaid_options_unset_by_default() {
+        let config: BookConfig = serde_json::from_str(r#"{"title": "Test"}"#).unwrap();
+        assert!(config.mermaid.is_none());
     }
 
     #[test]

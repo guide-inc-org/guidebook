@@ -1106,3 +1106,42 @@ fn test_summary_links_to_other_sites_open_there() {
     let next = page.find("page-nav next").unwrap();
     assert!(page[next..].contains("href=\"../a/next.html\""), "{}", page);
 }
+
+#[test]
+fn test_mermaid_initializes_with_default_options() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+
+    build_book(&source, &output);
+
+    let page = read_page(output.join("index.html"));
+    assert!(
+        page.contains("mermaid.initialize({\"startOnLoad\":true})"),
+        "{}",
+        page
+    );
+}
+
+#[test]
+fn test_mermaid_options_are_used() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("book");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&source).unwrap();
+    create_test_book(&source);
+    fs::write(
+        source.join("book.json"),
+        r#"{"title": "Test Book", "mermaid": {"theme": "dark"}}"#,
+    )
+    .unwrap();
+
+    build_book(&source, &output);
+
+    let page = read_page(output.join("index.html"));
+    assert!(page.contains("mermaid.initialize("), "{}", page);
+    assert!(page.contains("\"startOnLoad\":true"), "{}", page);
+    assert!(page.contains("\"theme\":\"dark\""), "{}", page);
+}
